@@ -1,52 +1,33 @@
 # Animartoon — AI Animation Studio
 
-## Sprint 1.8 — MVP 0.9
+## Sprint 1.8.3 — MVP 0.9.3
 
-A plataforma agora passa a tratar explicitamente **quem está falando** e a continuidade entre subcenas técnicas.
+Foi adicionado um fluxo específico para testar a fonte do YouTube.
 
-### Personagem falante
-Cada cena pode ter um campo `speaker`.
-
-Quando a cena possui diálogo, esse personagem é incluído no prompt de animação como o personagem que deve receber a sincronização labial. Isso evita que personagens secundários sejam animados como se estivessem falando.
-
-Na importação de SRT/VTT:
-- se a cena tiver apenas um personagem cadastrado, ele é sugerido automaticamente como falante;
-- cenas com mais de um personagem continuam exigindo revisão humana.
-
-A edição em massa também permite definir o falante para várias cenas ao mesmo tempo.
-
-### Continuidade entre subcenas A/B/C
-Quando uma cena longa foi dividida tecnicamente em partes como:
+### Teste do link
+Na página **Importação**, ao lado de **Salvar URL**, existe agora o botão:
 
 ```
-C086A
-C086B
-C086C
+Testar link do YouTube
 ```
 
-a tela **Detalhes** oferece **Propagar continuidade**.
+A Animartoon:
+- valida o formato da URL;
+- extrai o ID do vídeo;
+- tenta obter metadados públicos via oEmbed;
+- exibe título/autor quando disponíveis;
+- mostra uma prévia incorporada do vídeo;
+- mantém o link como referência oficial do projeto.
 
-A ação replica para as subcenas do mesmo grupo:
-- personagens;
-- cenário;
-- personagem falante;
-- câmera;
-- som ambiente;
-- direção de ação quando ainda não preenchida.
+### Limitação importante
+Uma página estática hospedada no GitHub Pages não pode ler os pixels internos do player do YouTube por causa das restrições de origem do navegador. Portanto, o link pode ser validado e visualizado, mas a detecção automática de cortes não consegue operar diretamente sobre o player incorporado.
 
-Também grava uma nota automática de continuidade para que o prompt peça a manutenção de:
-- aparência;
-- posição dos personagens;
-- iluminação;
-- ambiente;
-- lógica de câmera.
+Para análise automática de cenas a partir do link, a arquitetura precisa de um **serviço separado de análise**. Esse serviço pode ser adicionado futuramente sem alterar o restante da aplicação.
 
-### Auditoria
-A página Auditoria agora também identifica cenas de diálogo com texto preenchido, mas sem personagem falante definido.
+### Situação do vídeo local
+O fluxo local permanece disponível e agora possui diagnóstico explícito quando o navegador não entrega quadros diferentes para o canvas.
 
-## Próximos passos
-- associação assistida do falante usando padrões do roteiro;
-- continuidade visual com miniaturas da cena anterior;
-- pesquisa textual por fala/personagem/cenário;
-- perfis dos geradores editáveis;
-- iniciar modo Projeto Original.
+## Próximo passo técnico
+- criar um serviço opcional de análise de vídeo;
+- manter o GitHub Pages como front-end;
+- devolver para a Animartoon somente a lista de cortes, tempos e metadados de cenas.
