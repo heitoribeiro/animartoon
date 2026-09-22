@@ -82,12 +82,27 @@ function attachAnalysisVideo(e){
  if(analysisObjectUrl)URL.revokeObjectURL(analysisObjectUrl);
  analysisObjectUrl=URL.createObjectURL(f);
  const v=document.createElement('video');v.preload='metadata';
- v.onloadedmetadata=()=>{const p=project();p.analysisFileName=f.name;p.analysisDuration=v.duration;if(!p.duration)p.duration=v.duration;save();render();toast('Vídeo pronto para análise')};
+ v.onloadedmetadata=()=>{const p=project();p.analysisFileName=f.name;p.analysisDuration=v.duration;if(!p.duration)p.duration=v.duration;delete p.analysisCandidateScenes;delete p.analysisStats;save();render();toast('Vídeo pronto para análise — clique em Detectar cenas')};
  v.src=analysisObjectUrl
 }
 function cancelVideoAnalysis(){analysisAbort=true;const t=document.getElementById('analysisProgressText');if(t)t.textContent='Cancelamento solicitado...'}
-function waitDecodedFrame(video){return new Promise(resolve=>{if('requestVideoFrameCallback' in video){video.requestVideoFrameCallback(()=>resolve())}else{requestAnimationFrame(()=>setTimeout(resolve,20))}})}
-function waitSeek(video,time){return new Promise((resolve,reject)=>{let settled=false;const target=Math.min(Math.max(0,time),Math.max(0,video.duration-0.03));const cleanup=()=>{video.removeEventListener('seeked',done);video.removeEventListener('error',fail)};const finish=async()=>{if(settled)return;settled=true;cleanup();await waitDecodedFrame(video);resolve()};const done=()=>finish();const fail=()=>{if(settled)return;settled=true;cleanup();reject(video.error||new Error('seek'))};video.addEventListener('seeked',done);video.addEventListener('error',fail);if(Math.abs(video.currentTime-target)<0.01&&video.readyState>=2&&!video.seeking){finish()}else{video.currentTime=target}})}
+function waitMediaReady(video){return new Promise((resolve,reject)=>{if(video.readyState>=2)return resolve();const ok=()=>{cleanup();resolve()},fail=()=>{cleanup();reject(video.error||new Error('media'))},cleanup=()=>{video.removeEventListener('loadeddata',ok);video.removeEventListener('canplay',ok);video.removeEventListener('error',fail)};video.addEventListener('loadeddata',ok,{once:true});video.addEventListener('canplay',ok,{once:true});video.addEventListener('error',fail,{once:true});video.load()})}
+function waitDecodedFrame(video){return new Promise(resolve=>{if('requestVideoFrameCallback' in video){let done=false;const fallback=setTimeout(()=>{if(!done){done=true;resolve()}},250);video.requestVideoFrameCallback(()=>{if(done)return;done=true;clearTimeout(fallback);resolve()})}else{requestAnimationFrame(()=>setTimeout(resolve,35))}})}
+async function waitSeek(video,time){
+ await waitMediaReady(video);
+ const target=Math.min(Math.max(0,time),Math.max(0,video.duration-0.03));
+ if(Math.abs(video.currentTime-target)<0.01&&!video.seeking){await waitDecodedFrame(video);return}
+ return new Promise((resolve,reject)=>{
+  let settled=false,timer;
+  const cleanup=()=>{clearTimeout(timer);video.removeEventListener('seeked',done);video.removeEventListener('error',fail)};
+  const finish=async()=>{if(settled)return;settled=true;cleanup();await waitDecodedFrame(video);resolve()};
+  const done=()=>finish();
+  const fail=()=>{if(settled)return;settled=true;cleanup();reject(video.error||new Error('seek'))};
+  video.addEventListener('seeked',done);video.addEventListener('error',fail);
+  timer=setTimeout(()=>{if(Math.abs(video.currentTime-target)<0.08)finish();else fail()},1800);
+  video.currentTime=target;
+ })
+}
 function frameVector(video,canvas,ctx){
  ctx.drawImage(video,0,0,canvas.width,canvas.height);
  const d=ctx.getImageData(0,0,canvas.width,canvas.height).data,out=new Uint8Array(canvas.width*canvas.height*3);
@@ -128,12 +143,16 @@ function buildDetectedScenes(cuts,duration,splitLong){
 }
 async function analyzeSelectedVideo(){
  if(!analysisVideoFile||!analysisObjectUrl)return toast('Selecione primeiro um arquivo local');
+ const progressText=document.getElementById('analysisProgressText'),progressBar=document.getElementById('analysisProgressBar');
+ if(progressText)progressText.textContent='Preparando vídeo...';if(progressBar)progressBar.style.width='1%';
  const step=Number(document.getElementById('analysisStep')?.value||1),fraction=Number(document.getElementById('analysisThreshold')?.value||0.05),splitLong=!!document.getElementById('splitLongScenes')?.checked;
  const labels={0.03:'Baixa',0.05:'Média',0.08:'Alta'},video=document.createElement('video'),canvas=document.createElement('canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true});
- canvas.width=64;canvas.height=36;video.muted=true;video.preload='auto';video.src=analysisObjectUrl;analysisAbort=false;
- await new Promise((resolve,reject)=>{video.onloadedmetadata=resolve;video.onerror=reject});
- const duration=video.duration,total=Math.ceil(duration/step),samples=[];let prev=null;
+ canvas.width=64;canvas.height=36;video.muted=true;video.playsInline=true;video.preload='auto';analysisAbort=false;
  try{
+  video.src=analysisObjectUrl;
+  await new Promise((resolve,reject)=>{if(video.readyState>=1)return resolve();video.addEventListener('loadedmetadata',resolve,{once:true});video.addEventListener('error',()=>reject(video.error||new Error('metadata')),{once:true});video.load()});
+  await waitMediaReady(video);
+  const duration=video.duration,total=Math.ceil(duration/step),samples=[];let prev=null;
   await waitSeek(video,0);
   for(let i=0,t=0;t<duration;t+=step,i++){
    if(analysisAbort){toast('Análise cancelada');return}
@@ -146,7 +165,7 @@ async function analyzeSelectedVideo(){
   p.analysisCandidateScenes=built.scenes;
   p.analysisStats={step,threshold:fraction,thresholdLabel:labels[fraction]||String(fraction),visualCuts:built.visualCuts,technicalSplits:built.technicalSplits,cutoff:Number(picked.cutoff.toFixed(4)),maxDiff:Number(Math.max(...samples.map(x=>x.diff)).toFixed(4)),analyzedAt:Date.now()};
   save();render();toast(built.scenes.length+' segmentos detectados')
- }catch(e){console.error(e);toast('Falha durante a análise do vídeo')}
+ }catch(e){console.error(e);const txt=document.getElementById('analysisProgressText');if(txt)txt.textContent='Falha na análise: '+(e?.message||'erro desconhecido');toast('Falha durante a análise do vídeo')}
 }
 async function captureThumb(video,time,width=160,height=90){
  const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d');
@@ -449,5 +468,5 @@ function filemap(){
 function audit(){const p=project(),summary=fileSummary(p),mi=p.scenes.filter(s=>s.image!=='done').length,ma=p.scenes.filter(s=>s.animation!=='done').length,long=p.scenes.filter(s=>sceneDuration(s)>10),pending=p.scenes.filter(s=>s.image!=='done'||s.animation!=='done'||!s.approved),missingChars=p.characters.filter(id=>!summary.characters[id]),missingScenarios=p.locations.filter(id=>!summary.scenarios[id]),missingSpeakers=p.scenes.filter(s=>s.type==='Diálogo'&&String(s.dialogue||'').trim()&&!String(s.speaker||'').trim());return '<div class="grid"><section class="card span2"><p class="eyebrow">AUDITORIA</p><h2>Verificação do projeto</h2><div class="audit"><div class="panel"><span class="muted">Cenas</span><strong>'+p.scenes.length+'</strong></div><div class="panel"><span class="muted">Imagens faltando</span><strong>'+mi+'</strong></div><div class="panel"><span class="muted">Animações faltando</span><strong>'+ma+'</strong></div><div class="panel"><span class="muted">Fora do padrão</span><strong>'+summary.unrecognized.length+'</strong></div></div></section>'+(pending.length?'<section class="card span2"><p class="eyebrow">PENDÊNCIAS</p><h2>Próximas lacunas</h2><div class="pending">'+pending.slice(0,20).map(s=>'<div><strong>'+s.id+'</strong><span>'+esc(s.title)+'</span><span class="warn">'+(s.image!=='done'?'imagem':s.animation!=='done'?'animação':'aprovação')+'</span></div>').join('')+'</div></section>':'')+(missingSpeakers.length?'<section class="card span2"><p class="eyebrow">FALANTES</p><h2>Diálogos sem personagem falante</h2><div class="pending">'+missingSpeakers.slice(0,20).map(s=>'<div><strong>'+s.id+'</strong><span>'+esc(s.dialogue||s.title)+'</span><span class="warn">definir falante</span></div>').join('')+'</div></section>':'')+(long.length?'<section class="card"><p class="eyebrow">DURAÇÃO</p><h2>Cenas acima de 10 s</h2><div class="pending">'+long.map(s=>'<div><strong>'+s.id+'</strong><span>'+esc(s.title)+'</span><span class="warn">'+sceneDuration(s).toFixed(1)+' s</span></div>').join('')+'</div></section>':'')+(summary.duplicates.length?'<section class="card"><p class="eyebrow">VERSÕES</p><h2>Múltiplas versões</h2><div class="pending">'+summary.duplicates.slice(0,20).map(x=>'<div><strong>'+x.key+'</strong><span>'+x.count+' arquivos</span><span class="ok">v'+String(x.latest.version).padStart(2,'0')+'</span></div>').join('')+'</div></section>':'')+'</div>'}
 function settings(){const p=project(),modes=['Google Drive Online','Google Drive no computador','Controle manual'],ts=state.tools||defaultTools;return '<div class="grid"><section class="card span2"><p class="eyebrow">ARMAZENAMENTO</p><h2>Modo do projeto</h2><div class="modes">'+modes.map(m=>'<button class="mode '+(p.storage===m?'selected':'')+'" onclick="setStorage(\''+m+'\')"><strong>'+m+'</strong></button>').join('')+'</div></section>'+(p.storage==='Google Drive no computador'?localFolderControls(p):p.storage==='Google Drive Online'?onlineDriveControls(p):'')+((p.storage==='Google Drive no computador'||p.storage==='Google Drive Online')?autoSyncControls(p):'')+'<section class="card span2"><p class="eyebrow">FERRAMENTAS</p><h2>Geradores cadastrados</h2><div class="settings-list">'+ts.map((t,i)=>'<div><div class="meta"><strong>'+t.name+'</strong><small class="muted">'+(t.category==='image'?'Imagem':'Animação')+(t.preferred?' • preferida':'')+'</small></div><div class="chips">'+(t.max?'<span class="chip">'+t.max+'s</span>':'')+(t.dialogue?'<span class="chip">fala</span>':'')+(t.ambience?'<span class="chip">ambiente</span>':'')+'</div><button class="btn" onclick="setPreferred('+i+')">'+(t.preferred?'★':'☆')+'</button><a href="'+t.url+'" target="_blank">Abrir ↗</a></div>').join('')+'</div></section></div>'}
 function setPreferred(i){const ts=state.tools||defaultTools,cat=ts[i].category;ts.forEach((t,j)=>{if(t.category===cat)t.preferred=j===i});state.tools=ts;save();render()}
-function render(){const p=project();nav();document.getElementById('pageTitle').textContent=state.page;document.getElementById('storagePill').textContent=p?.storage||'—';const mini=document.querySelector('.project-mini');if(mini)mini.innerHTML='<span>Projeto ativo</span><strong>'+esc(p?.name||'Nenhum')+'</strong><small>Sprint 1.8 • MVP 0.9</small>';const views={'Próxima ação':nextView,'Projetos':projectsView,'Importação':importView,'Produção':production,'Personagens':()=>assetsView('Personagens'),'Cenários':()=>assetsView('Cenários'),'Cenas':scenesView,'Mapa de arquivos':filemap,'Auditoria':audit,'Configurações':settings};document.getElementById('content').innerHTML=views[state.page]();configureAutoSync()}
+function render(){const p=project();nav();document.getElementById('pageTitle').textContent=state.page;document.getElementById('storagePill').textContent=p?.storage||'—';const mini=document.querySelector('.project-mini');if(mini)mini.innerHTML='<span>Projeto ativo</span><strong>'+esc(p?.name||'Nenhum')+'</strong><small>Sprint 1.8.1 • MVP 0.9.1</small>';const views={'Próxima ação':nextView,'Projetos':projectsView,'Importação':importView,'Produção':production,'Personagens':()=>assetsView('Personagens'),'Cenários':()=>assetsView('Cenários'),'Cenas':scenesView,'Mapa de arquivos':filemap,'Auditoria':audit,'Configurações':settings};document.getElementById('content').innerHTML=views[state.page]();configureAutoSync()}
 render();
