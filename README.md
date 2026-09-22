@@ -1,38 +1,44 @@
 # Animartoon — AI Animation Studio
 
-## Sprint 1.5.1 — MVP 0.6.1
+## Sprint 1.6 — MVP 0.7
 
-Correção da decupagem automática após o primeiro teste real com **Abraão e Isaque**.
+A plataforma ganhou duas evoluções voltadas à revisão e direção das cenas.
 
-### Problema identificado
-O teste mostrou:
+### Miniaturas da decupagem
+Após detectar cenas automaticamente, a tela de Importação agora permite gerar miniaturas dos quadros de início e fim dos primeiros segmentos detectados.
 
-- 151 segmentos;
-- 0 cortes visuais;
-- 151 subcenas técnicas.
+Isso ajuda a validar visualmente:
+- se o corte faz sentido;
+- se duas cenas foram divididas no ponto correto;
+- se uma subcena técnica de 8–10 segundos preserva continuidade.
 
-Isso significava que o detector não estava encontrando mudanças visuais e apenas dividia o vídeo inteiro em blocos de aproximadamente 10 segundos.
+As miniaturas são geradas localmente no navegador a partir do arquivo selecionado.
 
-### Correções
-- espera explícita pelo quadro efetivamente decodificado após cada seek;
-- uso de `requestVideoFrameCallback` quando disponível;
-- amostragem aumentada para 64×36;
-- detecção por picos relativos de diferença visual;
-- limiar adaptativo calculado pela distribuição dos próprios quadros;
-- níveis de sensibilidade passam a representar a fração de maiores diferenças visuais analisadas;
-- intervalo mínimo entre cortes para evitar cortes duplicados;
-- IDs de subcenas agora suportam A...Z, AA, AB etc.;
-- painel passa a mostrar o limiar calculado e a maior diferença visual encontrada.
+### Direção detalhada por cena
+A página **Cenas** passa a ter o botão **Detalhes**. Para cada cena é possível registrar:
 
-### Como testar
-Na página **Importação**:
+- fala / diálogo;
+- ação;
+- câmera / enquadramento;
+- som ambiente.
 
-1. selecione novamente o vídeo local;
-2. escolha **Equilibrada — 1 s** e **Sensibilidade Média**;
-3. mantenha marcada a opção de dividir cenas acima do limite do gerador;
-4. clique em **Detectar cenas**.
+Esses campos passam a alimentar automaticamente os prompts de imagem e animação.
 
-O resultado esperado é que o campo **Cortes visuais** deixe de ficar em zero. O número total não precisa coincidir exatamente com a análise externa de referência, mas deve ficar em uma faixa plausível e com cortes distribuídos pelo vídeo.
+### Prompts enriquecidos
+O prompt de imagem incorpora ação e orientação de câmera.
 
-## Próximo refinamento
-Após esse teste, calibrar a detecção para se aproximar da decupagem visual de referência e então adicionar miniaturas de início/fim de cena.
+O prompt de animação passa a incorporar:
+- duração;
+- ação;
+- fala e sincronização labial quando aplicável;
+- som ambiente;
+- direção de câmera;
+- continuidade visual.
+
+## Próximos passos
+- validar a calibração real da decupagem;
+- miniaturas para mais cenas sob demanda;
+- edição em massa de cenas;
+- transcrição opcional;
+- perfis editáveis dos geradores;
+- projeto original e projeto inspirado em referência.
