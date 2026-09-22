@@ -3,6 +3,8 @@ import os
 import re
 import subprocess
 import tempfile
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Optional
 
@@ -122,6 +124,81 @@ def build_scenes(cuts: list[float], duration: float, max_duration: float, split_
                 "sourceGroup": base,
             })
     return scenes, technical
+
+def google_drive_request(url: str, access_token: str):
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {access_token}"})
+    return urllib.request.urlopen(req, timeout=120)
+
+def download_drive_file(file_id: str, access_token: str, dest: str):
+    meta_url = "https://www.googleapis.com/drive/v3/files/" + urllib.parse.quote(file_id) + "?fields=id,name,size,mimeType"
+    try:
+        with google_drive_request(meta_url, access_token) as resp:
+            meta = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Não foi possível acessar o arquivo no Google Drive: {e}")
+
+    mime = meta.get("mimeType", "")
+    if mime == "application/vnd.google-apps.folder" or mime.startswith("application/vnd.google-apps."):
+        raise HTTPException(status_code=400, detail="Selecione um arquivo de vídeo real no Google Drive")
+
+    size = int(meta.get("size") or 0)
+    if size and size > 500 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Arquivo acima de 500 MB")
+
+    media_url = "https://www.googleapis.com/drive/v3/files/" + urllib.parse.quote(file_id) + "?alt=media"
+    try:
+        with google_drive_request(media_url, access_token) as resp, open(dest, "wb") as out:
+            total = 0
+            while True:
+                chunk = resp.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > 500 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="Arquivo acima de 500 MB")
+                out.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Falha ao baixar o arquivo do Google Drive: {e}")
+    return meta
+
+@app.post("/analyze-drive")
+def analyze_drive(
+    file_id: str = Form(...),
+    access_token: str = Form(...),
+    threshold: float = Form(0.35),
+    max_duration: float = Form(10.0),
+    split_long: bool = Form(True),
+):
+    if threshold < 0.05 or threshold > 0.95:
+        raise HTTPException(status_code=400, detail="threshold must be between 0.05 and 0.95")
+    if max_duration < 1 or max_duration > 60:
+        raise HTTPException(status_code=400, detail="max_duration must be between 1 and 60")
+
+    with tempfile.TemporaryDirectory(prefix="animartoon_drive_") as td:
+        meta = download_drive_file(file_id, access_token, os.path.join(td, "input.bin"))
+        path = os.path.join(td, "input.bin")
+        try:
+            duration = ffprobe_duration(path)
+            cuts = detect_scene_cuts(path, threshold)
+            scenes, technical = build_scenes(cuts, duration, max_duration, split_long)
+            return {
+                "ok": True,
+                "source": "google-drive",
+                "filename": meta.get("name"),
+                "duration": round(duration, 3),
+                "threshold": threshold,
+                "visualCuts": len(cuts),
+                "technicalSplits": technical,
+                "sceneCount": len(scenes),
+                "cuts": cuts,
+                "scenes": scenes,
+            }
+        except subprocess.TimeoutExpired:
+            raise HTTPException(status_code=504, detail="Tempo limite excedido durante a análise")
+        except subprocess.CalledProcessError:
+            raise HTTPException(status_code=422, detail="FFmpeg/FFprobe não conseguiu processar o arquivo")
 
 @app.post("/analyze-upload")
 async def analyze_upload(
