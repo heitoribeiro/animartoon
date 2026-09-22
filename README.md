@@ -1,44 +1,58 @@
 # Animartoon — AI Animation Studio
 
-## Sprint 1.6 — MVP 0.7
+## Sprint 1.7 — MVP 0.8
 
-A plataforma ganhou duas evoluções voltadas à revisão e direção das cenas.
+A Animartoon agora possui dois recursos para acelerar a revisão de projetos grandes.
 
-### Miniaturas da decupagem
-Após detectar cenas automaticamente, a tela de Importação agora permite gerar miniaturas dos quadros de início e fim dos primeiros segmentos detectados.
+### Importação opcional de transcrição
+Na página **Importação** é possível carregar arquivos:
 
-Isso ajuda a validar visualmente:
-- se o corte faz sentido;
-- se duas cenas foram divididas no ponto correto;
-- se uma subcena técnica de 8–10 segundos preserva continuidade.
+- SRT;
+- VTT.
 
-As miniaturas são geradas localmente no navegador a partir do arquivo selecionado.
+A plataforma lê os intervalos de tempo das legendas e associa cada trecho às cenas da decupagem por sobreposição temporal.
 
-### Direção detalhada por cena
-A página **Cenas** passa a ter o botão **Detalhes**. Para cada cena é possível registrar:
+Quando encontra fala:
+- preenche o campo **Fala / diálogo**;
+- converte cenas `A revisar` ou `Ambiente/Narração` para `Diálogo`;
+- preserva falas já preenchidas por padrão;
+- oferece a opção de substituir falas existentes.
 
-- fala / diálogo;
-- ação;
-- câmera / enquadramento;
-- som ambiente.
+Nenhum serviço externo é necessário para esse fluxo.
 
-Esses campos passam a alimentar automaticamente os prompts de imagem e animação.
+### Edição em massa de cenas
+A página **Cenas** ganhou:
 
-### Prompts enriquecidos
-O prompt de imagem incorpora ação e orientação de câmera.
+- filtros por estado;
+- seleção múltipla;
+- selecionar todas as cenas visíveis;
+- edição coletiva de tipo;
+- edição coletiva de cenário;
+- edição coletiva de personagens;
+- edição coletiva de som ambiente.
 
-O prompt de animação passa a incorporar:
-- duração;
-- ação;
-- fala e sincronização labial quando aplicável;
-- som ambiente;
-- direção de câmera;
-- continuidade visual.
+Filtros disponíveis:
+- Todas;
+- A revisar;
+- Diálogo;
+- Ambiente;
+- Sem fala;
+- Pendentes.
+
+### Uso recomendado
+Depois da decupagem automática:
+
+1. aplicar as cenas detectadas;
+2. importar SRT/VTT, quando houver;
+3. filtrar `A revisar`;
+4. selecionar grupos de cenas;
+5. preencher cenário/personagens/ambiente em lote;
+6. abrir **Detalhes** apenas nas cenas que exigirem direção individual.
 
 ## Próximos passos
-- validar a calibração real da decupagem;
-- miniaturas para mais cenas sob demanda;
-- edição em massa de cenas;
-- transcrição opcional;
-- perfis editáveis dos geradores;
-- projeto original e projeto inspirado em referência.
+- associação opcional de personagem falante;
+- importação de roteiro TXT/CSV;
+- pesquisa textual de cenas;
+- propagação de continuidade entre subcenas A/B;
+- perfis de geradores totalmente editáveis;
+- projetos originais e inspirados em referência.
