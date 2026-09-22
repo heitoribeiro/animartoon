@@ -12,7 +12,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-app = FastAPI(title="Animartoon Analyzer", version="0.1.0")
+app = FastAPI(title="Animartoon Analyzer", version="0.2.1")
 
 allowed_origins = [
     "https://heitoribeiro.github.io",
@@ -34,7 +34,7 @@ SCENE_RE = re.compile(r"pts_time:([0-9.]+)")
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "animartoon-analyzer", "version": "0.1.0"}
+    return {"ok": True, "service": "animartoon-analyzer", "version": "0.2.1", "driveAnalysis": True}
 
 def ffprobe_duration(path: str) -> float:
     cmd = [
