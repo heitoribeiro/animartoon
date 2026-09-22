@@ -99,13 +99,13 @@ def build_scenes(cuts: list[float], duration: float, max_duration: float, split_
         if split_long and max_duration > 0:
             import math
             count = max(1, math.ceil(length / max_duration))
+        if count > 1:
+            technical += count - 1
         for part in range(count):
             a = start + length * part / count
             b = start + length * (part + 1) / count
             base = f"C{visual_index:03d}"
             suffix = alpha_suffix(part) if count > 1 else ""
-            if count > 1:
-                technical += 1
             scenes.append({
                 "id": base + suffix,
                 "start": round(a, 3),
