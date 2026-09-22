@@ -1,59 +1,55 @@
 # Animartoon — AI Animation Studio
 
-Plataforma estática para organizar produção de animações assistidas por IA.
+## Sprint 1.5 — MVP 0.6
 
-## Sprint 1.4 — MVP 0.5
+A Animartoon agora possui uma primeira versão de **decupagem automática de vídeo no navegador**.
 
-Esta versão passa a reconhecer também referências de **personagens** e **cenários** nos arquivos sincronizados, além dos arquivos de cenas.
+### Como funciona
+O usuário seleciona uma cópia local do vídeo na página **Importação**. A aplicação:
 
-### Personagens
-Padrão sugerido:
+- lê o vídeo localmente, sem upload;
+- amostra quadros em intervalos configuráveis;
+- compara mudanças visuais entre os quadros;
+- sugere pontos de corte;
+- gera uma lista preliminar de cenas;
+- pode dividir automaticamente segmentos acima do limite do gerador;
+- mantém o resultado como prévia até o usuário decidir aplicá-lo;
+- envia as cenas aplicadas para a página **Cenas**, onde podem ser revisadas.
 
-```
-ABRAHAM_01_FRONT.png
-ABRAHAM_01_3Q.png
-ABRAHAM_01_SIDE.png
-ABRAHAM_01_BACK.png
-```
+### Modos de análise
+- Rápida — 2 s;
+- Equilibrada — 1 s;
+- Precisa — 0,5 s.
 
-A página Personagens passa a indicar quais vistas foram localizadas.
+Também há níveis de sensibilidade Baixa, Média e Alta.
 
-### Cenários
-Padrão sugerido:
-
-```
-CAMP_OASIS_01_BASE.png
-CAMP_OASIS_01_WIDE.png
-CAMP_OASIS_01_DETAIL.png
-```
-
-A página Cenários passa a indicar quais referências foram encontradas.
-
-### Auditoria
-A auditoria agora também aponta:
-- personagens cadastrados sem arquivo detectado;
-- cenários cadastrados sem arquivo detectado;
-- cenas sem imagem, animação ou aprovação;
-- arquivos fora do padrão;
-- múltiplas versões;
-- cenas acima de 10 segundos.
-
-### Mapa de Arquivos
-O progresso de Personagens e Cenários deixa de considerar apenas o cadastro lógico. Agora ele pode ser alimentado pela presença real das referências encontradas no armazenamento sincronizado.
-
-## Padrões atuais
+### Divisão por limite do gerador
+Quando ativada, uma cena longa pode ser dividida em subcenas técnicas:
 
 ```
-01_PERSONAGENS/ABRAHAM_01_FRONT.png
-02_CENARIOS/CAMP_OASIS_01_BASE.png
-03_IMAGENS_CENAS/C001_IMG_v01.png
-04_ANIMACOES/C001_ANIM_v01.mp4
-07_CENAS_FINAIS/C001_FINAL_v01.mp4
+C086A
+C086B
 ```
+
+A intenção é compatibilizar a produção com geradores que trabalham, por exemplo, com máximo de 8 ou 10 segundos por vídeo.
+
+### Importante
+A detecção desta Sprint é **visual e preliminar**. Ela não interpreta diálogo, narrativa ou semântica da cena. O objetivo é acelerar a decupagem inicial. A revisão humana continua necessária antes da geração dos prompts finais.
+
+### Outras melhorias mantidas
+- Google Drive Online opcional;
+- Google Drive no computador;
+- sincronização manual ou periódica;
+- reconhecimento de arquivos de cena;
+- reconhecimento de referências de personagens e cenários;
+- auditoria;
+- próxima ação;
+- ferramentas externas: Gemini, SnapGen, Meta AI, Vibes e Grok.
 
 ## Próximos passos
-- primeira decupagem automática de vídeo no navegador;
-- sugestão de divisão de cenas acima do limite do gerador;
-- cadastro de fala, ação e câmera por cena;
+- refino dos pontos de corte detectados;
+- miniaturas dos quadros de início/fim de cada cena;
+- edição de fala, ação, câmera e som ambiente por cena;
+- transcrição/roteiro opcional;
 - perfis editáveis dos geradores;
-- suporte a projetos originais e inspirados em referências.
+- projetos originais e inspirados em referências.
