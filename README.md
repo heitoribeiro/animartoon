@@ -2,24 +2,47 @@
 
 Plataforma estática para organizar produção de animações assistidas por IA.
 
-## Sprint 1.2 — MVP 0.3
+## Sprint 1.3 — MVP 0.4
 
-Além do fluxo da Sprint 1.1, esta versão implementa o primeiro modo operacional de sincronização de arquivos:
+Esta versão amplia a sincronização e mantém a aplicação sem backend obrigatório.
 
-- vínculo de uma pasta local do projeto usando File System Access API;
-- compatível com uma pasta sincronizada pelo Google Drive para computador;
-- armazenamento do handle autorizado em IndexedDB;
-- criação opcional da estrutura padrão de pastas;
-- varredura recursiva dos arquivos sem upload;
-- reconhecimento automático de `Cnnn_IMG_vNN`, `Cnnn_ANIM_vNN` e `Cnnn_FINAL_vNN`;
-- atualização automática do status das cenas a partir dos arquivos encontrados;
-- detecção de múltiplas versões de uma mesma etapa;
-- escolha da maior versão como versão atual;
-- lista de arquivos fora do padrão;
-- Mapa Físico de arquivos;
-- Auditoria com pendências, cenas acima de 10 s e versões encontradas.
+### Sincronização automática
+- modos: manual, 30 segundos, 1 minuto e 5 minutos;
+- funciona enquanto a página estiver aberta;
+- no modo Google Drive no computador, reaproveita a pasta autorizada quando a permissão continua válida;
+- no modo Google Drive Online, reaproveita a sessão OAuth enquanto o token estiver ativo.
 
-## Estrutura sugerida
+### Google Drive Online opcional
+- configuração de OAuth Client ID diretamente no projeto;
+- o OAuth Client ID é público e não equivale a uma chave secreta dos geradores de IA;
+- conexão pelo Google Identity Services no navegador;
+- escopo utilizado: `drive.metadata.readonly`;
+- leitura recursiva de nomes e metadados de arquivos da pasta escolhida;
+- a pasta pode ser informada por link ou ID;
+- nenhum vídeo ou imagem é enviado para a Animartoon;
+- a plataforma usa apenas os metadados para atualizar o andamento do projeto.
+
+### Modos de armazenamento
+- Google Drive Online;
+- Google Drive no computador;
+- Controle manual.
+
+### Reconhecimento de arquivos
+```
+C001_IMG_v01.png
+C001_ANIM_v01.mp4
+C001_FINAL_v01.mp4
+```
+
+Versões adicionais, como `v02` e `v03`, são agrupadas como versões da mesma etapa.
+
+## Observações sobre o Google Drive Online
+
+Para usar o modo online é necessário criar um **OAuth Client ID para aplicação Web** no Google Cloud e autorizar a URL publicada da Animartoon como origem JavaScript. Não é necessário guardar client secret no front-end.
+
+O token de acesso é mantido somente em memória na sessão atual do navegador e não é gravado no projeto.
+
+## Estrutura local sugerida
 
 ```
 Projeto/
@@ -33,26 +56,10 @@ Projeto/
 └── 08_EPISODIO_FINAL/
 ```
 
-## Nomenclatura
-
-```
-C001_IMG_v01.png
-C001_ANIM_v01.mp4
-C001_FINAL_v01.mp4
-```
-
-Versões adicionais, como `v02` e `v03`, são tratadas como versões da mesma cena, não como novas cenas.
-
-## Observações
-
-A leitura direta de pastas depende da File System Access API, portanto funciona melhor em navegadores Chromium, como Chrome e Edge, em contexto HTTPS (como GitHub Pages). A aplicação lê apenas os arquivos/pastas que o usuário autoriza.
-
 ## Próximos passos
-
-- integração opcional com Google Drive Online;
-- IndexedDB para os dados completos dos projetos;
-- sincronização periódica configurável;
-- análise automática de personagens/cenários por nomes de arquivos;
-- decupagem automática de vídeo no navegador;
+- criação assistida da estrutura de pastas no Drive Online;
 - perfis editáveis dos geradores;
-- suporte futuro a projetos originais e inspirados em referências.
+- sincronização de personagens e cenários pelos nomes dos arquivos;
+- IndexedDB para dados completos dos projetos;
+- decupagem automática no navegador;
+- projetos originais e inspirados em referências.
