@@ -1,6 +1,6 @@
 # Animartoon — AI Animation Studio
 
-## Sprint 1.9 — MVP 1.0
+## Sprint 1.9.1 — MVP 1.0.1
 
 A Animartoon passa a usar uma arquitetura híbrida:
 
@@ -39,6 +39,16 @@ O link do YouTube continua sendo validado e exibido como referência. A análise
 ```
 https://analyzer-production-8860.up.railway.app
 ```
+
+## Calibração real
+
+O vídeo **Abraão e Isaque** foi usado para calibrar o detector FFmpeg. Com limiar `0.35`, foram encontrados **153 cortes visuais**, praticamente o mesmo resultado da análise técnica de referência usada no desenvolvimento. Por isso, a sensibilidade **Média** do analisador remoto passa a usar `0.35` como perfil padrão.
+
+Perfis atuais do servidor:
+
+- Baixa: `0.42`;
+- Média: `0.35`;
+- Alta: `0.28`.
 
 ## Próximos passos
 - validar o serviço com o vídeo Abraão e Isaque;
