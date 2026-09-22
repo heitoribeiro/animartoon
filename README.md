@@ -1,33 +1,48 @@
 # Animartoon — AI Animation Studio
 
-## Sprint 1.8.3 — MVP 0.9.3
+## Sprint 1.9 — MVP 1.0
 
-Foi adicionado um fluxo específico para testar a fonte do YouTube.
+A Animartoon passa a usar uma arquitetura híbrida:
 
-### Teste do link
-Na página **Importação**, ao lado de **Salvar URL**, existe agora o botão:
+- **GitHub Pages** para a interface;
+- **Railway** para análise pesada de vídeo;
+- **FFmpeg/FFprobe** para detecção real de cortes.
 
+### Serviço de análise
+Foi criado o serviço `animartoon-analyzer` com:
+
+- `GET /health`;
+- `POST /analyze-upload`;
+- upload temporário de vídeo;
+- leitura da duração via FFprobe;
+- detecção de cortes via FFmpeg `scene`;
+- divisão técnica opcional conforme duração máxima do gerador;
+- retorno JSON com tempos, cortes e cenas;
+- descarte do arquivo após o processamento;
+- CORS restrito ao front-end da Animartoon.
+
+### Front-end
+A página **Importação** ganhou o card **Analisador FFmpeg — Serviço**.
+
+Fluxo:
+1. selecionar o arquivo local;
+2. testar o serviço;
+3. clicar em **Analisar arquivo com FFmpeg**;
+4. acompanhar o upload;
+5. receber os cortes detectados;
+6. revisar e aplicar a decupagem.
+
+### YouTube
+O link do YouTube continua sendo validado e exibido como referência. A análise de pixels diretamente do player incorporado não é feita no GitHub Pages.
+
+## Endpoint atual
 ```
-Testar link do YouTube
+https://analyzer-production-8860.up.railway.app
 ```
 
-A Animartoon:
-- valida o formato da URL;
-- extrai o ID do vídeo;
-- tenta obter metadados públicos via oEmbed;
-- exibe título/autor quando disponíveis;
-- mostra uma prévia incorporada do vídeo;
-- mantém o link como referência oficial do projeto.
-
-### Limitação importante
-Uma página estática hospedada no GitHub Pages não pode ler os pixels internos do player do YouTube por causa das restrições de origem do navegador. Portanto, o link pode ser validado e visualizado, mas a detecção automática de cortes não consegue operar diretamente sobre o player incorporado.
-
-Para análise automática de cenas a partir do link, a arquitetura precisa de um **serviço separado de análise**. Esse serviço pode ser adicionado futuramente sem alterar o restante da aplicação.
-
-### Situação do vídeo local
-O fluxo local permanece disponível e agora possui diagnóstico explícito quando o navegador não entrega quadros diferentes para o canvas.
-
-## Próximo passo técnico
-- criar um serviço opcional de análise de vídeo;
-- manter o GitHub Pages como front-end;
-- devolver para a Animartoon somente a lista de cortes, tempos e metadados de cenas.
+## Próximos passos
+- validar o serviço com o vídeo Abraão e Isaque;
+- calibrar o threshold do FFmpeg;
+- gerar miniaturas no backend;
+- suportar jobs assíncronos para vídeos maiores;
+- adicionar progresso de processamento no servidor.
