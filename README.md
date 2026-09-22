@@ -1,58 +1,52 @@
 # Animartoon — AI Animation Studio
 
-## Sprint 1.7 — MVP 0.8
+## Sprint 1.8 — MVP 0.9
 
-A Animartoon agora possui dois recursos para acelerar a revisão de projetos grandes.
+A plataforma agora passa a tratar explicitamente **quem está falando** e a continuidade entre subcenas técnicas.
 
-### Importação opcional de transcrição
-Na página **Importação** é possível carregar arquivos:
+### Personagem falante
+Cada cena pode ter um campo `speaker`.
 
-- SRT;
-- VTT.
+Quando a cena possui diálogo, esse personagem é incluído no prompt de animação como o personagem que deve receber a sincronização labial. Isso evita que personagens secundários sejam animados como se estivessem falando.
 
-A plataforma lê os intervalos de tempo das legendas e associa cada trecho às cenas da decupagem por sobreposição temporal.
+Na importação de SRT/VTT:
+- se a cena tiver apenas um personagem cadastrado, ele é sugerido automaticamente como falante;
+- cenas com mais de um personagem continuam exigindo revisão humana.
 
-Quando encontra fala:
-- preenche o campo **Fala / diálogo**;
-- converte cenas `A revisar` ou `Ambiente/Narração` para `Diálogo`;
-- preserva falas já preenchidas por padrão;
-- oferece a opção de substituir falas existentes.
+A edição em massa também permite definir o falante para várias cenas ao mesmo tempo.
 
-Nenhum serviço externo é necessário para esse fluxo.
+### Continuidade entre subcenas A/B/C
+Quando uma cena longa foi dividida tecnicamente em partes como:
 
-### Edição em massa de cenas
-A página **Cenas** ganhou:
+```
+C086A
+C086B
+C086C
+```
 
-- filtros por estado;
-- seleção múltipla;
-- selecionar todas as cenas visíveis;
-- edição coletiva de tipo;
-- edição coletiva de cenário;
-- edição coletiva de personagens;
-- edição coletiva de som ambiente.
+a tela **Detalhes** oferece **Propagar continuidade**.
 
-Filtros disponíveis:
-- Todas;
-- A revisar;
-- Diálogo;
-- Ambiente;
-- Sem fala;
-- Pendentes.
+A ação replica para as subcenas do mesmo grupo:
+- personagens;
+- cenário;
+- personagem falante;
+- câmera;
+- som ambiente;
+- direção de ação quando ainda não preenchida.
 
-### Uso recomendado
-Depois da decupagem automática:
+Também grava uma nota automática de continuidade para que o prompt peça a manutenção de:
+- aparência;
+- posição dos personagens;
+- iluminação;
+- ambiente;
+- lógica de câmera.
 
-1. aplicar as cenas detectadas;
-2. importar SRT/VTT, quando houver;
-3. filtrar `A revisar`;
-4. selecionar grupos de cenas;
-5. preencher cenário/personagens/ambiente em lote;
-6. abrir **Detalhes** apenas nas cenas que exigirem direção individual.
+### Auditoria
+A página Auditoria agora também identifica cenas de diálogo com texto preenchido, mas sem personagem falante definido.
 
 ## Próximos passos
-- associação opcional de personagem falante;
-- importação de roteiro TXT/CSV;
-- pesquisa textual de cenas;
-- propagação de continuidade entre subcenas A/B;
-- perfis de geradores totalmente editáveis;
-- projetos originais e inspirados em referência.
+- associação assistida do falante usando padrões do roteiro;
+- continuidade visual com miniaturas da cena anterior;
+- pesquisa textual por fala/personagem/cenário;
+- perfis dos geradores editáveis;
+- iniciar modo Projeto Original.
