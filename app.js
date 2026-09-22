@@ -23,6 +23,9 @@ function loadState(){
  return {page:'Próxima ação',activeProjectId:demoProject.id,projects:[demoProject],tools:defaultTools};
 }
 let state=loadState();
+let autoSyncTimer=null;
+let driveToken=null;
+let driveTokenClient=null;
 const pages=['Próxima ação','Projetos','Importação','Produção','Personagens','Cenários','Cenas','Mapa de arquivos','Auditoria','Configurações'];
 function save(){localStorage.setItem('animartoon-state',JSON.stringify(state))}
 function project(){return state.projects.find(p=>p.id===state.activeProjectId)||state.projects[0]}
@@ -41,7 +44,7 @@ function expectedFile(s,type){return type==='image'?s.id+'_IMG_v'+nextVersion(s,
 function imagePrompt(s){return 'Create a consistent stylized 3D animated keyframe for scene '+s.id+': '+s.title+'. Characters: '+(s.characters.join(', ')||'none')+'. Location: '+(s.location||'unspecified')+'. Preserve character identity, costume, proportions, biblical-era continuity, cinematic family-animation lighting and composition. '+(s.dialogue?'This scene will later include dialogue: "'+s.dialogue+'".':'No spoken dialogue is required in the image.')}
 function animationPrompt(s){const d=sceneDuration(s).toFixed(1);return 'Create a '+d+'-second animation from the supplied image for scene '+s.id+': '+s.title+'. '+(s.type==='Diálogo'?'Include natural synchronized spoken dialogue'+(s.dialogue?' exactly as follows: "'+s.dialogue+'".':' based on the supplied scene audio/script.')+' Add natural facial acting, lip synchronization and subtle scene ambience.':'Do not add spoken dialogue. Animate character/environment movement and scene ambience naturally.')+' Preserve the exact characters, costume, setting and visual continuity. Camera movement should remain coherent with the source scene.'}
 function markNext(){const p=project(),s=nextScene(p);if(!s)return;if(s.image!=='done'){s.image='done';s.imageVersion=(s.imageVersion||0)+1}else if(s.animation!=='done'){s.animation='done';s.animationVersion=(s.animationVersion||0)+1}else s.approved=true;save();render()}
-function setStorage(m){project().storage=m;save();render()}
+function setStorage(m){project().storage=m;save();configureAutoSync();render()}
 function selectProject(id){state.activeProjectId=id;state.page='Próxima ação';save();render()}
 function deleteProject(id){if(state.projects.length===1)return toast('Mantenha ao menos um projeto');state.projects=state.projects.filter(p=>p.id!==id);if(state.activeProjectId===id)state.activeProjectId=state.projects[0].id;save();render()}
 function projectCard(p){return '<article class="card project-card '+(p.id===state.activeProjectId?'selected':'')+'"><div class="top"><div><p class="eyebrow">'+p.kind.toUpperCase()+'</p><h2>'+esc(p.name)+'</h2></div><span class="percent">'+progress(p)+'%</span></div><p class="muted">'+(p.sourceType==='youtube'?'YouTube':p.sourceType==='upload'?'Arquivo local':'Projeto')+(p.duration?' • '+fmt(p.duration):'')+'</p><div class="progress"><div style="width:'+progress(p)+'%"></div></div><div class="actions"><button class="btn primary" onclick="selectProject(\''+p.id+'\')">Abrir</button><button class="btn" onclick="deleteProject(\''+p.id+'\')">Excluir</button></div></article>'}
@@ -64,6 +67,106 @@ function assetsView(kind){const p=project(),arr=kind==='Personagens'?p.character
 function addAsset(kind){const v=prompt(kind==='Personagens'?'ID do personagem, ex.: ABRAHAM_01':'ID do cenário, ex.: CAMP_OASIS_01');if(!v)return;const arr=kind==='Personagens'?project().characters:project().locations;if(!arr.includes(v.trim()))arr.push(v.trim());save();render()}
 function removeAsset(kind,v){const key=kind==='Personagens'?'characters':'locations';project()[key]=project()[key].filter(x=>x!==v);save();render()}
 
+
+function syncIntervalMs(p=project()){const v=p.autoSync||'manual';return v==='30s'?30000:v==='1m'?60000:v==='5m'?300000:0}
+function configureAutoSync(){
+ if(autoSyncTimer){clearInterval(autoSyncTimer);autoSyncTimer=null}
+ const ms=syncIntervalMs();
+ if(!ms)return;
+ autoSyncTimer=setInterval(()=>{silentAutoSync()},ms);
+}
+async function silentAutoSync(){
+ const p=project();
+ try{
+  if(p.storage==='Google Drive no computador'){
+   const h=await loadDirectoryHandle(p.id);
+   if(!h)return;
+   if(await h.queryPermission({mode:'read'})!=='granted')return;
+   await syncProjectFolder(true);
+  }else if(p.storage==='Google Drive Online'&&driveToken&&p.driveFolderId){
+   await syncDriveOnline(true);
+  }
+ }catch(e){}
+}
+function setAutoSync(v){project().autoSync=v;save();configureAutoSync();render()}
+function parseDriveFolderId(value){
+ const s=String(value||'').trim();
+ const m=s.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+ return m?m[1]:s;
+}
+function loadScript(src,id){
+ return new Promise((resolve,reject)=>{
+  if(document.getElementById(id))return resolve();
+  const s=document.createElement('script');s.id=id;s.src=src;s.async=true;s.defer=true;s.onload=resolve;s.onerror=reject;document.head.appendChild(s);
+ })
+}
+async function saveDriveConfig(){
+ const p=project();
+ p.driveClientId=(document.getElementById('driveClientId')?.value||'').trim();
+ p.driveFolderId=parseDriveFolderId(document.getElementById('driveFolderId')?.value||'');
+ save();render();toast('Configuração do Drive salva');
+}
+async function connectDriveOnline(){
+ const p=project();
+ if(!p.driveClientId)return toast('Informe o OAuth Client ID do Google');
+ if(!p.driveFolderId)return toast('Informe a pasta do Google Drive');
+ try{
+  await loadScript('https://accounts.google.com/gsi/client','google-gsi');
+  driveTokenClient=google.accounts.oauth2.initTokenClient({
+   client_id:p.driveClientId,
+   scope:'https://www.googleapis.com/auth/drive.metadata.readonly',
+   callback:(resp)=>{
+    if(resp.error)return toast('Falha na autorização do Google Drive');
+    driveToken=resp.access_token;
+    p.driveConnectedAt=Date.now();
+    save();render();toast('Google Drive conectado');
+   }
+  });
+  driveTokenClient.requestAccessToken({prompt:'consent'});
+ }catch(e){toast('Não foi possível carregar a autorização Google')}
+}
+function disconnectDriveOnline(){driveToken=null;project().driveConnectedAt=null;save();render();toast('Google Drive desconectado')}
+async function driveListChildren(folderId,path='',out=[]){
+ let pageToken='';
+ do{
+  const q=encodeURIComponent("'"+folderId+"' in parents and trashed=false");
+  const fields=encodeURIComponent('nextPageToken,files(id,name,mimeType,modifiedTime,size)');
+  const url='https://www.googleapis.com/drive/v3/files?q='+q+'&fields='+fields+'&pageSize=1000'+(pageToken?'&pageToken='+encodeURIComponent(pageToken):'');
+  const r=await fetch(url,{headers:{Authorization:'Bearer '+driveToken}});
+  if(r.status===401){driveToken=null;throw new Error('TOKEN_EXPIRED')}
+  if(!r.ok)throw new Error('DRIVE_'+r.status);
+  const data=await r.json();
+  for(const item of data.files||[]){
+   const full=path?path+'/'+item.name:item.name;
+   if(item.mimeType==='application/vnd.google-apps.folder')await driveListChildren(item.id,full,out);
+   else out.push({name:item.name,path:full,size:Number(item.size||0),lastModified:item.modifiedTime?Date.parse(item.modifiedTime):0,type:item.mimeType||'',driveId:item.id});
+  }
+  pageToken=data.nextPageToken||'';
+ }while(pageToken);
+ return out;
+}
+async function syncDriveOnline(silent=false){
+ const p=project();
+ if(!driveToken){if(!silent)toast('Conecte novamente ao Google Drive');return}
+ if(!p.driveFolderId){if(!silent)toast('Informe a pasta do Google Drive');return}
+ try{
+  if(!silent)toast('Consultando Google Drive...');
+  const files=(await driveListChildren(p.driveFolderId)).map(classifyFile),summary=summarizeFiles(files);
+  p.fileIndex=files;p.lastSync=Date.now();p.fileStats={recognized:summary.recognized.length,unrecognized:summary.unrecognized.length,duplicates:summary.duplicates.length,total:files.length};
+  applyFileIndex(p,summary);save();render();if(!silent)toast('Google Drive sincronizado');
+ }catch(e){
+  if(e.message==='TOKEN_EXPIRED'){if(!silent)toast('Sessão do Google Drive expirou; conecte novamente')}
+  else if(!silent)toast('Falha ao consultar Google Drive');
+ }
+}
+function onlineDriveControls(p){
+ const connected=!!driveToken;
+ return '<section class="card span2"><div class="section-title"><div><p class="eyebrow">GOOGLE DRIVE ONLINE</p><h2>'+(connected?'Conectado nesta sessão':'Configurar monitoramento')+'</h2></div><span class="badge '+(connected?'ok':'warn')+'">'+(connected?'conectado':'desconectado')+'</span></div><p class="muted">A integração usa OAuth no navegador e escopo somente de metadados. O Client ID é um identificador público do aplicativo Google, não uma chave secreta de IA.</p><div class="form-grid"><label>OAuth Client ID<input id="driveClientId" value="'+esc(p.driveClientId||'')+'" placeholder="...apps.googleusercontent.com"></label><label>Pasta do projeto no Drive<input id="driveFolderId" value="'+esc(p.driveFolderId||'')+'" placeholder="Cole o link da pasta ou o ID"></label></div><div class="actions"><button class="btn" onclick="saveDriveConfig()">Salvar configuração</button><button class="btn primary" onclick="connectDriveOnline()">Conectar Google Drive</button><button class="btn" onclick="syncDriveOnline()">↻ Sincronizar agora</button>'+(connected?'<button class="btn danger" onclick="disconnectDriveOnline()">Desconectar</button>':'')+'</div>'+(p.lastSync?'<p class="muted note">Última sincronização: '+new Date(p.lastSync).toLocaleString('pt-BR')+'</p>':'')+'</section>'
+}
+function autoSyncControls(p){
+ const opts=[['manual','Manual'],['30s','30 segundos'],['1m','1 minuto'],['5m','5 minutos']];
+ return '<section class="card span2"><div class="section-title"><div><p class="eyebrow">SINCRONIZAÇÃO AUTOMÁTICA</p><h2>Frequência</h2></div><span class="badge">'+(p.autoSync&&p.autoSync!=='manual'?'ativa':'manual')+'</span></div><div class="sync-options">'+opts.map(([v,l])=>'<button class="mode '+((p.autoSync||'manual')===v?'selected':'')+'" onclick="setAutoSync(\''+v+'\')"><strong>'+l+'</strong></button>').join('')+'</div><p class="muted note">A sincronização automática funciona enquanto a página estiver aberta. No modo local, a permissão da pasta precisa continuar válida; no Drive Online, a sessão OAuth precisa estar conectada.</p></section>'
+}
 const folderLayout=['00_REFERENCIAS','01_PERSONAGENS','02_CENARIOS','03_IMAGENS_CENAS','04_ANIMACOES','06_AUDIO','07_CENAS_FINAIS','08_EPISODIO_FINAL'];
 const dbName='animartoon-fs',storeName='handles';
 function openFsDb(){return new Promise((resolve,reject)=>{const req=indexedDB.open(dbName,1);req.onupgradeneeded=()=>{if(!req.result.objectStoreNames.contains(storeName))req.result.createObjectStore(storeName)};req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error)})}
@@ -82,9 +185,9 @@ function applyFileIndex(p,summary){for(const s of p.scenes){const imgs=summary.g
 async function syncProjectFolder(){const h=await getProjectHandle(false);if(!h)return toast('Vincule ou reconecte a pasta do projeto');toast('Analisando arquivos...');const files=(await walkDirectory(h)).map(classifyFile),summary=summarizeFiles(files),p=project();p.fileIndex=files;p.lastSync=Date.now();p.folderName=h.name;p.fileStats={recognized:summary.recognized.length,unrecognized:summary.unrecognized.length,duplicates:summary.duplicates.length,total:files.length};applyFileIndex(p,summary);save();render();toast('Sincronização concluída')}
 function fileSummary(p=project()){return summarizeFiles((p.fileIndex||[]).map(f=>f.recognized===undefined?classifyFile(f):f))}
 function localFolderControls(p){const supported=fsaSupported();return '<section class="card span2"><div class="section-title"><div><p class="eyebrow">PASTA LOCAL / GOOGLE DRIVE DESKTOP</p><h2>'+(p.folderName?esc(p.folderName):'Nenhuma pasta vinculada')+'</h2></div><span class="badge '+(supported?'ok':'warn')+'">'+(supported?'compatível':'não suportado')+'</span></div><p class="muted">Selecione a pasta do projeto dentro do Google Drive para computador. A Animartoon lê somente nomes e metadados autorizados; os arquivos não são enviados.</p><div class="actions"><button class="btn primary" onclick="chooseProjectFolder()">Selecionar pasta</button><button class="btn" onclick="reconnectFolder()">Reconectar</button><button class="btn" onclick="createFolderStructure()">Criar estrutura</button><button class="btn" onclick="syncProjectFolder()">↻ Sincronizar agora</button></div>'+(p.lastSync?'<p class="muted note">Última sincronização: '+new Date(p.lastSync).toLocaleString('pt-BR')+'</p>':'')+'</section>'}
-function filemap(){const p=project(),summary=fileSummary(p),i=p.scenes.filter(s=>s.image==='done').length,a=p.scenes.filter(s=>s.animation==='done').length,f=p.scenes.filter(s=>s.approved).length,b=[['Personagens',p.characters.length,p.characters.length||1],['Cenários',p.locations.length,p.locations.length||1],['Imagens',i,p.scenes.length||1],['Animações',a,p.scenes.length||1],['Cenas finais',f,p.scenes.length||1]],physical=[['Arquivos totais',(p.fileIndex||[]).length],['Reconhecidos',summary.recognized.length],['Fora do padrão',summary.unrecognized.length],['Grupos com versões',summary.duplicates.length]];return '<div class="grid">'+(p.storage==='Google Drive no computador'?localFolderControls(p):'')+'<section class="card span2"><p class="eyebrow">MAPA DA PRODUÇÃO</p><h2>Progresso por categoria</h2>'+b.map(x=>'<div class="mapline"><div class="topline"><strong>'+x[0]+'</strong><span>'+x[1]+' / '+(x[0]==='Personagens'||x[0]==='Cenários'?x[1]:x[2])+'</span></div><div class="mini"><div style="width:'+Math.min(100,x[1]/x[2]*100)+'%"></div></div></div>').join('')+'</section><section class="card span2"><p class="eyebrow">MAPA FÍSICO</p><h2>Arquivos encontrados</h2><div class="audit">'+physical.map(x=>'<div class="panel"><span class="muted">'+x[0]+'</span><strong>'+x[1]+'</strong></div>').join('')+'</div></section>'+(summary.duplicates.length?'<section class="card"><p class="eyebrow">VERSÕES</p><h2>Arquivos versionados</h2><div class="pending">'+summary.duplicates.slice(0,12).map(x=>'<div><strong>'+x.key+'</strong><span>'+x.count+' versões</span><span class="ok">última v'+String(x.latest.version).padStart(2,'0')+'</span></div>').join('')+'</div></section>':'')+(summary.unrecognized.length?'<section class="card"><p class="eyebrow">NÃO RECONHECIDOS</p><h2>Fora do padrão</h2><div class="pending">'+summary.unrecognized.slice(0,12).map(x=>'<div><span>'+esc(x.name)+'</span><small class="muted">'+esc(x.path)+'</small></div>').join('')+'</div></section>':'')+'<section class="card span2"><p class="eyebrow">PADRÃO DE ARQUIVOS</p><h2>Nomenclatura esperada</h2><div class="folders"><div>03_IMAGENS_CENAS/<strong>C001_IMG_v01.png</strong></div><div>04_ANIMACOES/<strong>C001_ANIM_v01.mp4</strong></div><div>07_CENAS_FINAIS/<strong>C001_FINAL_v01.mp4</strong></div></div></section></div>'}
+function filemap(){const p=project(),summary=fileSummary(p),i=p.scenes.filter(s=>s.image==='done').length,a=p.scenes.filter(s=>s.animation==='done').length,f=p.scenes.filter(s=>s.approved).length,b=[['Personagens',p.characters.length,p.characters.length||1],['Cenários',p.locations.length,p.locations.length||1],['Imagens',i,p.scenes.length||1],['Animações',a,p.scenes.length||1],['Cenas finais',f,p.scenes.length||1]],physical=[['Arquivos totais',(p.fileIndex||[]).length],['Reconhecidos',summary.recognized.length],['Fora do padrão',summary.unrecognized.length],['Grupos com versões',summary.duplicates.length]];return '<div class="grid">'+(p.storage==='Google Drive no computador'?localFolderControls(p):p.storage==='Google Drive Online'?onlineDriveControls(p):'')+((p.storage==='Google Drive no computador'||p.storage==='Google Drive Online')?autoSyncControls(p):'')+'<section class="card span2"><p class="eyebrow">MAPA DA PRODUÇÃO</p><h2>Progresso por categoria</h2>'+b.map(x=>'<div class="mapline"><div class="topline"><strong>'+x[0]+'</strong><span>'+x[1]+' / '+(x[0]==='Personagens'||x[0]==='Cenários'?x[1]:x[2])+'</span></div><div class="mini"><div style="width:'+Math.min(100,x[1]/x[2]*100)+'%"></div></div></div>').join('')+'</section><section class="card span2"><p class="eyebrow">MAPA FÍSICO</p><h2>Arquivos encontrados</h2><div class="audit">'+physical.map(x=>'<div class="panel"><span class="muted">'+x[0]+'</span><strong>'+x[1]+'</strong></div>').join('')+'</div></section>'+(summary.duplicates.length?'<section class="card"><p class="eyebrow">VERSÕES</p><h2>Arquivos versionados</h2><div class="pending">'+summary.duplicates.slice(0,12).map(x=>'<div><strong>'+x.key+'</strong><span>'+x.count+' versões</span><span class="ok">última v'+String(x.latest.version).padStart(2,'0')+'</span></div>').join('')+'</div></section>':'')+(summary.unrecognized.length?'<section class="card"><p class="eyebrow">NÃO RECONHECIDOS</p><h2>Fora do padrão</h2><div class="pending">'+summary.unrecognized.slice(0,12).map(x=>'<div><span>'+esc(x.name)+'</span><small class="muted">'+esc(x.path)+'</small></div>').join('')+'</div></section>':'')+'<section class="card span2"><p class="eyebrow">PADRÃO DE ARQUIVOS</p><h2>Nomenclatura esperada</h2><div class="folders"><div>03_IMAGENS_CENAS/<strong>C001_IMG_v01.png</strong></div><div>04_ANIMACOES/<strong>C001_ANIM_v01.mp4</strong></div><div>07_CENAS_FINAIS/<strong>C001_FINAL_v01.mp4</strong></div></div></section></div>'}
 function audit(){const p=project(),summary=fileSummary(p),mi=p.scenes.filter(s=>s.image!=='done').length,ma=p.scenes.filter(s=>s.animation!=='done').length,long=p.scenes.filter(s=>sceneDuration(s)>10),pending=p.scenes.filter(s=>s.image!=='done'||s.animation!=='done'||!s.approved);return '<div class="grid"><section class="card span2"><p class="eyebrow">AUDITORIA</p><h2>Verificação do projeto</h2><div class="audit"><div class="panel"><span class="muted">Cenas</span><strong>'+p.scenes.length+'</strong></div><div class="panel"><span class="muted">Imagens faltando</span><strong>'+mi+'</strong></div><div class="panel"><span class="muted">Animações faltando</span><strong>'+ma+'</strong></div><div class="panel"><span class="muted">Fora do padrão</span><strong>'+summary.unrecognized.length+'</strong></div></div></section>'+(pending.length?'<section class="card span2"><p class="eyebrow">PENDÊNCIAS</p><h2>Próximas lacunas</h2><div class="pending">'+pending.slice(0,20).map(s=>'<div><strong>'+s.id+'</strong><span>'+esc(s.title)+'</span><span class="warn">'+(s.image!=='done'?'imagem':s.animation!=='done'?'animação':'aprovação')+'</span></div>').join('')+'</div></section>':'')+(long.length?'<section class="card"><p class="eyebrow">DURAÇÃO</p><h2>Cenas acima de 10 s</h2><div class="pending">'+long.map(s=>'<div><strong>'+s.id+'</strong><span>'+esc(s.title)+'</span><span class="warn">'+sceneDuration(s).toFixed(1)+' s</span></div>').join('')+'</div></section>':'')+(summary.duplicates.length?'<section class="card"><p class="eyebrow">VERSÕES</p><h2>Múltiplas versões</h2><div class="pending">'+summary.duplicates.slice(0,20).map(x=>'<div><strong>'+x.key+'</strong><span>'+x.count+' arquivos</span><span class="ok">v'+String(x.latest.version).padStart(2,'0')+'</span></div>').join('')+'</div></section>':'')+'</div>'}
-function settings(){const p=project(),modes=['Google Drive Online','Google Drive no computador','Controle manual'],ts=state.tools||defaultTools;return '<div class="grid"><section class="card span2"><p class="eyebrow">ARMAZENAMENTO</p><h2>Modo do projeto</h2><div class="modes">'+modes.map(m=>'<button class="mode '+(p.storage===m?'selected':'')+'" onclick="setStorage(\''+m+'\')"><strong>'+m+'</strong></button>').join('')+'</div></section>'+(p.storage==='Google Drive no computador'?localFolderControls(p):'')+'<section class="card span2"><p class="eyebrow">FERRAMENTAS</p><h2>Geradores cadastrados</h2><div class="settings-list">'+ts.map((t,i)=>'<div><div class="meta"><strong>'+t.name+'</strong><small class="muted">'+(t.category==='image'?'Imagem':'Animação')+(t.preferred?' • preferida':'')+'</small></div><div class="chips">'+(t.max?'<span class="chip">'+t.max+'s</span>':'')+(t.dialogue?'<span class="chip">fala</span>':'')+(t.ambience?'<span class="chip">ambiente</span>':'')+'</div><button class="btn" onclick="setPreferred('+i+')">'+(t.preferred?'★':'☆')+'</button><a href="'+t.url+'" target="_blank">Abrir ↗</a></div>').join('')+'</div></section></div>'}
+function settings(){const p=project(),modes=['Google Drive Online','Google Drive no computador','Controle manual'],ts=state.tools||defaultTools;return '<div class="grid"><section class="card span2"><p class="eyebrow">ARMAZENAMENTO</p><h2>Modo do projeto</h2><div class="modes">'+modes.map(m=>'<button class="mode '+(p.storage===m?'selected':'')+'" onclick="setStorage(\''+m+'\')"><strong>'+m+'</strong></button>').join('')+'</div></section>'+(p.storage==='Google Drive no computador'?localFolderControls(p):p.storage==='Google Drive Online'?onlineDriveControls(p):'')+((p.storage==='Google Drive no computador'||p.storage==='Google Drive Online')?autoSyncControls(p):'')+'<section class="card span2"><p class="eyebrow">FERRAMENTAS</p><h2>Geradores cadastrados</h2><div class="settings-list">'+ts.map((t,i)=>'<div><div class="meta"><strong>'+t.name+'</strong><small class="muted">'+(t.category==='image'?'Imagem':'Animação')+(t.preferred?' • preferida':'')+'</small></div><div class="chips">'+(t.max?'<span class="chip">'+t.max+'s</span>':'')+(t.dialogue?'<span class="chip">fala</span>':'')+(t.ambience?'<span class="chip">ambiente</span>':'')+'</div><button class="btn" onclick="setPreferred('+i+')">'+(t.preferred?'★':'☆')+'</button><a href="'+t.url+'" target="_blank">Abrir ↗</a></div>').join('')+'</div></section></div>'}
 function setPreferred(i){const ts=state.tools||defaultTools,cat=ts[i].category;ts.forEach((t,j)=>{if(t.category===cat)t.preferred=j===i});state.tools=ts;save();render()}
-function render(){const p=project();nav();document.getElementById('pageTitle').textContent=state.page;document.getElementById('storagePill').textContent=p?.storage||'—';const mini=document.querySelector('.project-mini');if(mini)mini.innerHTML='<span>Projeto ativo</span><strong>'+esc(p?.name||'Nenhum')+'</strong><small>Sprint 1.2 • MVP 0.3</small>';const views={'Próxima ação':nextView,'Projetos':projectsView,'Importação':importView,'Produção':production,'Personagens':()=>assetsView('Personagens'),'Cenários':()=>assetsView('Cenários'),'Cenas':scenesView,'Mapa de arquivos':filemap,'Auditoria':audit,'Configurações':settings};document.getElementById('content').innerHTML=views[state.page]()}
+function render(){const p=project();nav();document.getElementById('pageTitle').textContent=state.page;document.getElementById('storagePill').textContent=p?.storage||'—';const mini=document.querySelector('.project-mini');if(mini)mini.innerHTML='<span>Projeto ativo</span><strong>'+esc(p?.name||'Nenhum')+'</strong><small>Sprint 1.3 • MVP 0.4</small>';const views={'Próxima ação':nextView,'Projetos':projectsView,'Importação':importView,'Produção':production,'Personagens':()=>assetsView('Personagens'),'Cenários':()=>assetsView('Cenários'),'Cenas':scenesView,'Mapa de arquivos':filemap,'Auditoria':audit,'Configurações':settings};document.getElementById('content').innerHTML=views[state.page]();configureAutoSync()}
 render();
