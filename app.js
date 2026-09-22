@@ -26,6 +26,13 @@ let state=loadState();
 let autoSyncTimer=null;
 let driveToken=null;
 let driveTokenClient=null;
+let driveTokenExpiresAt=0;
+try{
+ const savedToken=sessionStorage.getItem('animartoon-drive-token')||'';
+ const savedExpiry=Number(sessionStorage.getItem('animartoon-drive-expiry')||0);
+ if(savedToken&&savedExpiry>Date.now()+30000){driveToken=savedToken;driveTokenExpiresAt=savedExpiry}
+ else{sessionStorage.removeItem('animartoon-drive-token');sessionStorage.removeItem('animartoon-drive-expiry')}
+}catch(e){}
 let analysisVideoFile=null;
 let analysisObjectUrl=null;
 let analysisAbort=false;
@@ -487,6 +494,17 @@ async function saveDriveConfig(){
  p.driveFolderId=parseDriveFolderId(document.getElementById('driveFolderId')?.value||'');
  save();render();toast('Configuração do Drive salva');
 }
+function saveDriveSessionToken(token,expiresIn){
+ driveToken=token||null;
+ driveTokenExpiresAt=Date.now()+Math.max(60,Number(expiresIn||3600))*1000;
+ try{
+  if(driveToken){sessionStorage.setItem('animartoon-drive-token',driveToken);sessionStorage.setItem('animartoon-drive-expiry',String(driveTokenExpiresAt))}
+ }catch(e){}
+}
+function clearDriveSessionToken(){
+ driveToken=null;driveTokenExpiresAt=0;
+ try{sessionStorage.removeItem('animartoon-drive-token');sessionStorage.removeItem('animartoon-drive-expiry')}catch(e){}
+}
 async function connectDriveOnline(){
  const p=project();
  if(!p.driveClientId)return toast('Informe o OAuth Client ID do Google');
@@ -498,15 +516,15 @@ async function connectDriveOnline(){
    scope:'https://www.googleapis.com/auth/drive.readonly',
    callback:(resp)=>{
     if(resp.error)return toast('Falha na autorização do Google Drive');
-    driveToken=resp.access_token;
+    saveDriveSessionToken(resp.access_token,resp.expires_in);
     p.driveConnectedAt=Date.now();
     save();render();toast('Google Drive conectado');
    }
   });
-  driveTokenClient.requestAccessToken({prompt:'consent'});
+  driveTokenClient.requestAccessToken({prompt:p.driveConnectedAt?'':'consent'});
  }catch(e){toast('Não foi possível carregar a autorização Google')}
 }
-function disconnectDriveOnline(){driveToken=null;project().driveConnectedAt=null;save();render();toast('Google Drive desconectado')}
+function disconnectDriveOnline(){clearDriveSessionToken();project().driveConnectedAt=null;save();render();toast('Google Drive desconectado')}
 async function driveListChildren(folderId,path='',out=[]){
  let pageToken='';
  do{
@@ -514,7 +532,7 @@ async function driveListChildren(folderId,path='',out=[]){
   const fields=encodeURIComponent('nextPageToken,files(id,name,mimeType,modifiedTime,size)');
   const url='https://www.googleapis.com/drive/v3/files?q='+q+'&fields='+fields+'&pageSize=1000'+(pageToken?'&pageToken='+encodeURIComponent(pageToken):'');
   const r=await fetch(url,{headers:{Authorization:'Bearer '+driveToken}});
-  if(r.status===401){driveToken=null;throw new Error('TOKEN_EXPIRED')}
+  if(r.status===401){clearDriveSessionToken();throw new Error('TOKEN_EXPIRED')}
   if(!r.ok)throw new Error('DRIVE_'+r.status);
   const data=await r.json();
   for(const item of data.files||[]){
@@ -541,8 +559,8 @@ async function syncDriveOnline(silent=false){
  }
 }
 function onlineDriveControls(p){
- const connected=!!driveToken;
- return '<section class="card span2"><div class="section-title"><div><p class="eyebrow">GOOGLE DRIVE ONLINE</p><h2>'+(connected?'Conectado nesta sessão':'Configurar monitoramento')+'</h2></div><span class="badge '+(connected?'ok':'warn')+'">'+(connected?'conectado':'desconectado')+'</span></div><p class="muted">A integração usa OAuth no navegador e escopo de leitura do Drive. O Client ID é um identificador público do aplicativo Google, não uma chave secreta de IA. A permissão de leitura é necessária para que um vídeo selecionado possa ser enviado ao analisador.</p><div class="form-grid"><label>OAuth Client ID<input id="driveClientId" value="'+esc(p.driveClientId||'')+'" placeholder="...apps.googleusercontent.com"></label><label>Pasta do projeto no Drive<input id="driveFolderId" value="'+esc(p.driveFolderId||'')+'" placeholder="Cole o link da pasta ou o ID"></label></div><div class="actions"><button class="btn" onclick="saveDriveConfig()">Salvar configuração</button><button class="btn primary" onclick="connectDriveOnline()">Conectar Google Drive</button><button class="btn" onclick="syncDriveOnline()">↻ Sincronizar agora</button>'+(connected?'<button class="btn danger" onclick="disconnectDriveOnline()">Desconectar</button>':'')+'</div>'+(p.lastSync?'<p class="muted note">Última sincronização: '+new Date(p.lastSync).toLocaleString('pt-BR')+'</p>':'')+'</section>'
+ const connected=!!driveToken,hasPrior=!!p.driveConnectedAt;
+ return '<section class="card span2"><div class="section-title"><div><p class="eyebrow">GOOGLE DRIVE ONLINE</p><h2>'+(connected?'Conectado nesta sessão':hasPrior?'Reconectar Google Drive':'Configurar monitoramento')+'</h2></div><span class="badge '+(connected?'ok':'warn')+'">'+(connected?'conectado':hasPrior?'reconectar':'desconectado')+'</span></div><p class="muted">A integração usa OAuth no navegador e escopo de leitura do Drive. O token temporário fica apenas na sessão desta aba: uma atualização da página mantém a conexão enquanto o token ainda for válido; ao fechar a aba ou quando o token expirar, basta reconectar.</p><div class="form-grid"><label>OAuth Client ID<input id="driveClientId" value="'+esc(p.driveClientId||'')+'" placeholder="...apps.googleusercontent.com"></label><label>Pasta do projeto no Drive<input id="driveFolderId" value="'+esc(p.driveFolderId||'')+'" placeholder="Cole o link da pasta ou o ID"></label></div><div class="actions"><button class="btn" onclick="saveDriveConfig()">Salvar configuração</button><button class="btn primary" onclick="connectDriveOnline()">'+(connected?'Google Drive conectado':hasPrior?'Reconectar Google Drive':'Conectar Google Drive')+'</button><button class="btn" onclick="syncDriveOnline()">↻ Sincronizar agora</button>'+(connected?'<button class="btn danger" onclick="disconnectDriveOnline()">Desconectar</button>':'')+'</div>'+(connected&&driveTokenExpiresAt?'<p class="muted note">Sessão OAuth válida aproximadamente até '+new Date(driveTokenExpiresAt).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})+'. Atualizar a página não exige nova conexão enquanto esta sessão estiver válida.</p>':'')+(p.lastSync?'<p class="muted note">Última sincronização: '+new Date(p.lastSync).toLocaleString('pt-BR')+'</p>':'')+'</section>'
 }
 function autoSyncControls(p){
  const opts=[['manual','Manual'],['30s','30 segundos'],['1m','1 minuto'],['5m','5 minutos']];
@@ -601,5 +619,5 @@ function filemap(){
 function audit(){const p=project(),summary=fileSummary(p),mi=p.scenes.filter(s=>s.image!=='done').length,ma=p.scenes.filter(s=>s.animation!=='done').length,long=p.scenes.filter(s=>sceneDuration(s)>10),pending=p.scenes.filter(s=>s.image!=='done'||s.animation!=='done'||!s.approved),missingChars=p.characters.filter(id=>!summary.characters[id]),missingScenarios=p.locations.filter(id=>!summary.scenarios[id]),missingSpeakers=p.scenes.filter(s=>s.type==='Diálogo'&&String(s.dialogue||'').trim()&&!String(s.speaker||'').trim());return '<div class="grid"><section class="card span2"><p class="eyebrow">AUDITORIA</p><h2>Verificação do projeto</h2><div class="audit"><div class="panel"><span class="muted">Cenas</span><strong>'+p.scenes.length+'</strong></div><div class="panel"><span class="muted">Imagens faltando</span><strong>'+mi+'</strong></div><div class="panel"><span class="muted">Animações faltando</span><strong>'+ma+'</strong></div><div class="panel"><span class="muted">Fora do padrão</span><strong>'+summary.unrecognized.length+'</strong></div></div></section>'+(pending.length?'<section class="card span2"><p class="eyebrow">PENDÊNCIAS</p><h2>Próximas lacunas</h2><div class="pending">'+pending.slice(0,20).map(s=>'<div><strong>'+s.id+'</strong><span>'+esc(s.title)+'</span><span class="warn">'+(s.image!=='done'?'imagem':s.animation!=='done'?'animação':'aprovação')+'</span></div>').join('')+'</div></section>':'')+(missingSpeakers.length?'<section class="card span2"><p class="eyebrow">FALANTES</p><h2>Diálogos sem personagem falante</h2><div class="pending">'+missingSpeakers.slice(0,20).map(s=>'<div><strong>'+s.id+'</strong><span>'+esc(s.dialogue||s.title)+'</span><span class="warn">definir falante</span></div>').join('')+'</div></section>':'')+(long.length?'<section class="card"><p class="eyebrow">DURAÇÃO</p><h2>Cenas acima de 10 s</h2><div class="pending">'+long.map(s=>'<div><strong>'+s.id+'</strong><span>'+esc(s.title)+'</span><span class="warn">'+sceneDuration(s).toFixed(1)+' s</span></div>').join('')+'</div></section>':'')+(summary.duplicates.length?'<section class="card"><p class="eyebrow">VERSÕES</p><h2>Múltiplas versões</h2><div class="pending">'+summary.duplicates.slice(0,20).map(x=>'<div><strong>'+x.key+'</strong><span>'+x.count+' arquivos</span><span class="ok">v'+String(x.latest.version).padStart(2,'0')+'</span></div>').join('')+'</div></section>':'')+'</div>'}
 function settings(){const p=project(),modes=['Google Drive Online','Google Drive no computador','Controle manual'],ts=state.tools||defaultTools;return '<div class="grid"><section class="card span2"><p class="eyebrow">ARMAZENAMENTO</p><h2>Modo do projeto</h2><div class="modes">'+modes.map(m=>'<button class="mode '+(p.storage===m?'selected':'')+'" onclick="setStorage(\''+m+'\')"><strong>'+m+'</strong></button>').join('')+'</div></section>'+(p.storage==='Google Drive no computador'?localFolderControls(p):p.storage==='Google Drive Online'?onlineDriveControls(p):'')+((p.storage==='Google Drive no computador'||p.storage==='Google Drive Online')?autoSyncControls(p):'')+'<section class="card span2"><p class="eyebrow">FERRAMENTAS</p><h2>Geradores cadastrados</h2><div class="settings-list">'+ts.map((t,i)=>'<div><div class="meta"><strong>'+t.name+'</strong><small class="muted">'+(t.category==='image'?'Imagem':'Animação')+(t.preferred?' • preferida':'')+'</small></div><div class="chips">'+(t.max?'<span class="chip">'+t.max+'s</span>':'')+(t.dialogue?'<span class="chip">fala</span>':'')+(t.ambience?'<span class="chip">ambiente</span>':'')+'</div><button class="btn" onclick="setPreferred('+i+')">'+(t.preferred?'★':'☆')+'</button><a href="'+t.url+'" target="_blank">Abrir ↗</a></div>').join('')+'</div></section></div>'}
 function setPreferred(i){const ts=state.tools||defaultTools,cat=ts[i].category;ts.forEach((t,j)=>{if(t.category===cat)t.preferred=j===i});state.tools=ts;save();render()}
-function render(){const p=project();nav();document.getElementById('pageTitle').textContent=state.page;document.getElementById('storagePill').textContent=p?.storage||'—';const mini=document.querySelector('.project-mini');if(mini)mini.innerHTML='<span>Projeto ativo</span><strong>'+esc(p?.name||'Nenhum')+'</strong><small>Sprint 2.0.1 • MVP 1.1.1</small>';const views={'Próxima ação':nextView,'Projetos':projectsView,'Importação':importView,'Produção':production,'Personagens':()=>assetsView('Personagens'),'Cenários':()=>assetsView('Cenários'),'Cenas':scenesView,'Mapa de arquivos':filemap,'Auditoria':audit,'Configurações':settings};document.getElementById('content').innerHTML=views[state.page]();configureAutoSync()}
+function render(){const p=project();nav();document.getElementById('pageTitle').textContent=state.page;document.getElementById('storagePill').textContent=p?.storage||'—';const mini=document.querySelector('.project-mini');if(mini)mini.innerHTML='<span>Projeto ativo</span><strong>'+esc(p?.name||'Nenhum')+'</strong><small>Sprint 2.0.2 • MVP 1.1.2</small>';const views={'Próxima ação':nextView,'Projetos':projectsView,'Importação':importView,'Produção':production,'Personagens':()=>assetsView('Personagens'),'Cenários':()=>assetsView('Cenários'),'Cenas':scenesView,'Mapa de arquivos':filemap,'Auditoria':audit,'Configurações':settings};document.getElementById('content').innerHTML=views[state.page]();configureAutoSync()}
 render();
