@@ -1,55 +1,38 @@
 # Animartoon — AI Animation Studio
 
-## Sprint 1.5 — MVP 0.6
+## Sprint 1.5.1 — MVP 0.6.1
 
-A Animartoon agora possui uma primeira versão de **decupagem automática de vídeo no navegador**.
+Correção da decupagem automática após o primeiro teste real com **Abraão e Isaque**.
 
-### Como funciona
-O usuário seleciona uma cópia local do vídeo na página **Importação**. A aplicação:
+### Problema identificado
+O teste mostrou:
 
-- lê o vídeo localmente, sem upload;
-- amostra quadros em intervalos configuráveis;
-- compara mudanças visuais entre os quadros;
-- sugere pontos de corte;
-- gera uma lista preliminar de cenas;
-- pode dividir automaticamente segmentos acima do limite do gerador;
-- mantém o resultado como prévia até o usuário decidir aplicá-lo;
-- envia as cenas aplicadas para a página **Cenas**, onde podem ser revisadas.
+- 151 segmentos;
+- 0 cortes visuais;
+- 151 subcenas técnicas.
 
-### Modos de análise
-- Rápida — 2 s;
-- Equilibrada — 1 s;
-- Precisa — 0,5 s.
+Isso significava que o detector não estava encontrando mudanças visuais e apenas dividia o vídeo inteiro em blocos de aproximadamente 10 segundos.
 
-Também há níveis de sensibilidade Baixa, Média e Alta.
+### Correções
+- espera explícita pelo quadro efetivamente decodificado após cada seek;
+- uso de `requestVideoFrameCallback` quando disponível;
+- amostragem aumentada para 64×36;
+- detecção por picos relativos de diferença visual;
+- limiar adaptativo calculado pela distribuição dos próprios quadros;
+- níveis de sensibilidade passam a representar a fração de maiores diferenças visuais analisadas;
+- intervalo mínimo entre cortes para evitar cortes duplicados;
+- IDs de subcenas agora suportam A...Z, AA, AB etc.;
+- painel passa a mostrar o limiar calculado e a maior diferença visual encontrada.
 
-### Divisão por limite do gerador
-Quando ativada, uma cena longa pode ser dividida em subcenas técnicas:
+### Como testar
+Na página **Importação**:
 
-```
-C086A
-C086B
-```
+1. selecione novamente o vídeo local;
+2. escolha **Equilibrada — 1 s** e **Sensibilidade Média**;
+3. mantenha marcada a opção de dividir cenas acima do limite do gerador;
+4. clique em **Detectar cenas**.
 
-A intenção é compatibilizar a produção com geradores que trabalham, por exemplo, com máximo de 8 ou 10 segundos por vídeo.
+O resultado esperado é que o campo **Cortes visuais** deixe de ficar em zero. O número total não precisa coincidir exatamente com a análise externa de referência, mas deve ficar em uma faixa plausível e com cortes distribuídos pelo vídeo.
 
-### Importante
-A detecção desta Sprint é **visual e preliminar**. Ela não interpreta diálogo, narrativa ou semântica da cena. O objetivo é acelerar a decupagem inicial. A revisão humana continua necessária antes da geração dos prompts finais.
-
-### Outras melhorias mantidas
-- Google Drive Online opcional;
-- Google Drive no computador;
-- sincronização manual ou periódica;
-- reconhecimento de arquivos de cena;
-- reconhecimento de referências de personagens e cenários;
-- auditoria;
-- próxima ação;
-- ferramentas externas: Gemini, SnapGen, Meta AI, Vibes e Grok.
-
-## Próximos passos
-- refino dos pontos de corte detectados;
-- miniaturas dos quadros de início/fim de cada cena;
-- edição de fala, ação, câmera e som ambiente por cena;
-- transcrição/roteiro opcional;
-- perfis editáveis dos geradores;
-- projetos originais e inspirados em referências.
+## Próximo refinamento
+Após esse teste, calibrar a detecção para se aproximar da decupagem visual de referência e então adicionar miniaturas de início/fim de cena.
