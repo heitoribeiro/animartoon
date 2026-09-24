@@ -16,7 +16,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-app = FastAPI(title="Animartoon Analyzer", version="0.3.0")
+app = FastAPI(title="Animartoon Analyzer", version="0.3.1")
 
 allowed_origins = [
     "https://heitoribeiro.github.io",
@@ -42,7 +42,7 @@ WHISPER_MODEL_LOCK = threading.Lock()
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "animartoon-analyzer", "version": "0.3.0", "driveAnalysis": True, "mediaEnrichment": True, "transcription": True, "thumbnails": True}
+    return {"ok": True, "service": "animartoon-analyzer", "version": "0.3.1", "driveAnalysis": True, "mediaEnrichment": True, "transcription": True, "thumbnails": True}
 
 def ffprobe_duration(path: str) -> float:
     cmd = [
@@ -190,6 +190,53 @@ def get_whisper_model():
     return WHISPER_MODEL
 
 
+def frame_metrics(path: str, at_seconds: float):
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-ss", f"{max(0.0, at_seconds):.3f}", "-i", path,
+        "-frames:v", "1", "-vf", "scale=32:18,format=gray",
+        "-f", "rawvideo", "-pix_fmt", "gray", "-"
+    ]
+    data = subprocess.check_output(cmd, timeout=25)
+    if not data:
+        return 0.0, 0.0
+    values = list(data)
+    mean = sum(values) / len(values)
+    variance = sum((x - mean) ** 2 for x in values) / len(values)
+    return mean, variance
+
+
+def choose_thumbnail_time(path: str, start: float, end: float):
+    duration = max(0.0, end - start)
+    if duration <= 0.2:
+        return start, "review", 0.0, 0.0
+    fractions = [0.50, 0.68, 0.35, 0.82, 0.20]
+    candidates = []
+    # Evaluate the middle first. If it is clearly useful, avoid extra FFmpeg work.
+    for idx, fraction in enumerate(fractions):
+        at = start + duration * fraction
+        try:
+            brightness, variance = frame_metrics(path, at)
+        except Exception:
+            brightness, variance = 0.0, 0.0
+        darkness_penalty = 1000 if brightness < 18 else 300 if brightness < 28 else 0
+        flat_penalty = 500 if variance < 70 else 150 if variance < 140 else 0
+        score = brightness * 1.4 + min(variance, 2500) * 0.08 - darkness_penalty - flat_penalty
+        candidates.append((score, at, brightness, variance))
+        if idx == 0 and brightness >= 34 and variance >= 170:
+            break
+    best = max(candidates, key=lambda x: x[0])
+    _, at, brightness, variance = best
+    status = "ok"
+    if brightness < 18:
+        status = "dark"
+    elif variance < 70:
+        status = "low_info"
+    elif brightness < 28 or variance < 140:
+        status = "review"
+    return at, status, brightness, variance
+
+
 def make_thumbnail(path: str, at_seconds: float) -> str:
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
@@ -237,16 +284,26 @@ def run_drive_media_job(job_id: str, file_id: str, access_token: str, scenes: li
             for index, scene in enumerate(valid_scenes):
                 start = max(0.0, float(scene.get("start") or 0))
                 end = min(duration, float(scene.get("end") or start))
-                if end <= start:
-                    at = start
-                else:
-                    # 35% avoids fades/cut frames while still representing the scene.
-                    at = start + (end - start) * 0.35
                 try:
+                    at, thumb_status, brightness, variance = choose_thumbnail_time(path, start, end)
                     image = make_thumbnail(path, at)
-                    thumbs.append({"sceneId": str(scene.get("id")), "at": round(at, 3), "image": image})
+                    thumbs.append({
+                        "sceneId": str(scene.get("id")),
+                        "at": round(at, 3),
+                        "image": image,
+                        "status": thumb_status,
+                        "brightness": round(brightness, 1),
+                        "variance": round(variance, 1),
+                    })
                 except Exception:
-                    thumbs.append({"sceneId": str(scene.get("id")), "at": round(at, 3), "image": None})
+                    thumbs.append({
+                        "sceneId": str(scene.get("id")),
+                        "at": round(start, 3),
+                        "image": None,
+                        "status": "review",
+                        "brightness": 0,
+                        "variance": 0,
+                    })
                 if index % 5 == 0 or index + 1 == total:
                     progress = 8 + int(((index + 1) / total) * 52)
                     set_media_job(job_id, progress=progress, message=f"Gerando miniaturas: {index + 1}/{total}")
