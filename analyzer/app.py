@@ -1,10 +1,14 @@
+import base64
 import json
 import os
 import re
 import subprocess
 import tempfile
+import threading
+import time
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -12,7 +16,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-app = FastAPI(title="Animartoon Analyzer", version="0.2.1")
+app = FastAPI(title="Animartoon Analyzer", version="0.3.0")
 
 allowed_origins = [
     "https://heitoribeiro.github.io",
@@ -31,10 +35,14 @@ app.add_middleware(
 )
 
 SCENE_RE = re.compile(r"pts_time:([0-9.]+)")
+MEDIA_JOBS = {}
+MEDIA_JOBS_LOCK = threading.Lock()
+WHISPER_MODEL = None
+WHISPER_MODEL_LOCK = threading.Lock()
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "animartoon-analyzer", "version": "0.2.1", "driveAnalysis": True}
+    return {"ok": True, "service": "animartoon-analyzer", "version": "0.3.0", "driveAnalysis": True, "mediaEnrichment": True, "transcription": True, "thumbnails": True}
 
 def ffprobe_duration(path: str) -> float:
     cmd = [
@@ -162,6 +170,143 @@ def download_drive_file(file_id: str, access_token: str, dest: str):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Falha ao baixar o arquivo do Google Drive: {e}")
     return meta
+
+
+def set_media_job(job_id: str, **values):
+    with MEDIA_JOBS_LOCK:
+        job = MEDIA_JOBS.setdefault(job_id, {"id": job_id, "status": "queued", "progress": 0, "message": "Na fila"})
+        job.update(values)
+
+
+def get_whisper_model():
+    global WHISPER_MODEL
+    if WHISPER_MODEL is not None:
+        return WHISPER_MODEL
+    with WHISPER_MODEL_LOCK:
+        if WHISPER_MODEL is None:
+            from faster_whisper import WhisperModel
+            model_name = os.getenv("WHISPER_MODEL", "base")
+            WHISPER_MODEL = WhisperModel(model_name, device="cpu", compute_type="int8")
+    return WHISPER_MODEL
+
+
+def make_thumbnail(path: str, at_seconds: float) -> str:
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-ss", f"{max(0.0, at_seconds):.3f}", "-i", path,
+        "-frames:v", "1", "-vf", "scale=320:-2",
+        "-q:v", "8", "-f", "image2pipe", "-vcodec", "mjpeg", "-"
+    ]
+    data = subprocess.check_output(cmd, timeout=35)
+    return "data:image/jpeg;base64," + base64.b64encode(data).decode("ascii")
+
+
+def transcribe_video(path: str) -> list[dict]:
+    model = get_whisper_model()
+    segments, info = model.transcribe(
+        path,
+        language=os.getenv("WHISPER_LANGUAGE", "pt"),
+        beam_size=3,
+        vad_filter=True,
+        condition_on_previous_text=True,
+    )
+    cues = []
+    for seg in segments:
+        text = (seg.text or "").strip()
+        if not text:
+            continue
+        cues.append({
+            "start": round(float(seg.start), 3),
+            "end": round(float(seg.end), 3),
+            "text": text,
+        })
+    return cues
+
+
+def run_drive_media_job(job_id: str, file_id: str, access_token: str, scenes: list[dict]):
+    started = time.time()
+    try:
+        set_media_job(job_id, status="running", progress=2, message="Baixando vídeo do Google Drive")
+        with tempfile.TemporaryDirectory(prefix="animartoon_media_") as td:
+            path = os.path.join(td, "input.bin")
+            meta = download_drive_file(file_id, access_token, path)
+            duration = ffprobe_duration(path)
+            thumbs = []
+            valid_scenes = [s for s in scenes if isinstance(s, dict) and s.get("id") is not None]
+            total = max(1, len(valid_scenes))
+            for index, scene in enumerate(valid_scenes):
+                start = max(0.0, float(scene.get("start") or 0))
+                end = min(duration, float(scene.get("end") or start))
+                if end <= start:
+                    at = start
+                else:
+                    # 35% avoids fades/cut frames while still representing the scene.
+                    at = start + (end - start) * 0.35
+                try:
+                    image = make_thumbnail(path, at)
+                    thumbs.append({"sceneId": str(scene.get("id")), "at": round(at, 3), "image": image})
+                except Exception:
+                    thumbs.append({"sceneId": str(scene.get("id")), "at": round(at, 3), "image": None})
+                if index % 5 == 0 or index + 1 == total:
+                    progress = 8 + int(((index + 1) / total) * 52)
+                    set_media_job(job_id, progress=progress, message=f"Gerando miniaturas: {index + 1}/{total}")
+
+            set_media_job(job_id, progress=64, message="Transcrevendo áudio em português")
+            cues = transcribe_video(path)
+            set_media_job(
+                job_id,
+                status="done",
+                progress=100,
+                message="Miniaturas e transcrição concluídas",
+                result={
+                    "ok": True,
+                    "filename": meta.get("name"),
+                    "duration": round(duration, 3),
+                    "thumbnailCount": sum(1 for x in thumbs if x.get("image")),
+                    "thumbnails": thumbs,
+                    "cueCount": len(cues),
+                    "cues": cues,
+                    "elapsedSeconds": round(time.time() - started, 1),
+                },
+            )
+    except Exception as exc:
+        set_media_job(job_id, status="error", progress=100, message=str(exc))
+
+
+@app.post("/process-drive-media")
+def process_drive_media(
+    file_id: str = Form(...),
+    access_token: str = Form(...),
+    scenes_json: str = Form(...),
+):
+    try:
+        scenes = json.loads(scenes_json)
+    except Exception:
+        raise HTTPException(status_code=400, detail="scenes_json inválido")
+    if not isinstance(scenes, list) or not scenes:
+        raise HTTPException(status_code=400, detail="Nenhuma cena informada")
+    if len(scenes) > 1000:
+        raise HTTPException(status_code=400, detail="Quantidade de cenas acima do limite")
+
+    job_id = uuid.uuid4().hex
+    set_media_job(job_id, status="queued", progress=0, message="Preparando processamento")
+    thread = threading.Thread(
+        target=run_drive_media_job,
+        args=(job_id, file_id, access_token, scenes),
+        daemon=True,
+    )
+    thread.start()
+    return {"ok": True, "jobId": job_id}
+
+
+@app.get("/media-job/{job_id}")
+def media_job(job_id: str):
+    with MEDIA_JOBS_LOCK:
+        job = MEDIA_JOBS.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Processamento não encontrado")
+        return dict(job)
+
 
 @app.post("/analyze-drive")
 def analyze_drive(
