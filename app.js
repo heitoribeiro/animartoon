@@ -421,17 +421,68 @@ function parseSubtitleText(text){
  return cues
 }
 function sceneCueOverlap(scene,cue){return Math.max(0,Math.min(scene.end,cue.end)-Math.max(scene.start,cue.start))}
+
+function normalizeSpeechText(text){return String(text||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim()}
+function classifySceneSpeech(scene,text){
+ const n=normalizeSpeechText(text),words=n?n.split(' ').filter(Boolean):[];
+ if(!n){
+  const weak=['dark','low_info','review'].includes(scene.thumbnailStatus);
+  return {type:weak?'Sem fala':'Ambiente',speechType:'none',confidence:weak?0.78:0.94,reason:weak?'sem fala e quadro pouco informativo':'sem fala detectada'};
+ }
+ let dialog=0,narration=0;
+ if(/[?!]/.test(text))dialog+=2;
+ if(/[“”"—-]/.test(text))dialog+=1;
+ const vocatives=['meu pai','meu filho','minha filha','senhor','mestre','irmao','irma','eis-me aqui','eis me aqui','pai','filho'];
+ if(vocatives.some(v=>n.includes(v)))dialog+=2;
+ const direct=['onde esta','nao temas','venha','venham','olhe','escute','diga-me','eu sou','eu vou','voce','voces','tu ','teu ','tua ','meu ','minha '];
+ if(direct.some(v=>n.includes(v)))dialog+=2;
+ if(words.length<=12)dialog+=1;
+
+ const narrativeMarkers=['naquele tempo','certo dia','entao','depois','em seguida','logo depois','aconteceu que','e aconteceu','naquele dia','quando chegou','enquanto isso','assim','por isso'];
+ if(narrativeMarkers.some(v=>n.includes(v)))narration+=2;
+ const third=['ele ','ela ','eles ','abraao ','isaque ','sara ','deus ','o senhor ','o anjo ','o homem ','o menino '];
+ if(third.filter(v=>n.includes(v)).length)narration+=1;
+ const narrativeVerbs=['foi','foram','levou','tomou','colocou','subiu','seguiu','seguiram','continuou','continuaram','chegou','partiu','voltou','viu','chamou','ordenou','preparou'];
+ if(narrativeVerbs.filter(v=>new RegExp('\\b'+v+'\\b').test(n)).length>=2)narration+=2;
+ if(words.length>=18)narration+=1;
+ if(/\b(disse|respondeu|perguntou|falou)\b/.test(n)&&!/[“”"]/.test(text)){narration+=1;dialog+=1}
+
+ const delta=Math.abs(dialog-narration);
+ if(delta<=1){
+  return {type:'A revisar',speechType:'unknown',confidence:0.58,reason:'fala ambígua entre diálogo e narração'};
+ }
+ if(dialog>narration){
+  return {type:'Diálogo',speechType:'character',confidence:Math.min(0.96,0.68+delta*0.08),reason:'padrões de fala direta'};
+ }
+ return {type:'Narração',speechType:'voice_over',confidence:Math.min(0.96,0.68+delta*0.08),reason:'padrões de locução narrativa'};
+}
+function applyAutoClassification(scene,text,force=false){
+ const result=classifySceneSpeech(scene,text);
+ scene.speechType=result.speechType;
+ scene.classificationConfidence=result.confidence;
+ scene.classificationReason=result.reason;
+ scene.autoClassifiedAt=Date.now();
+ if(force||!scene.manualType)scene.type=result.type;
+ return result
+}
+function reclassifyExistingScenes(force=false){
+ const p=project(),counts={'Diálogo':0,'Narração':0,'Ambiente':0,'Sem fala':0,'A revisar':0};
+ for(const s of p.scenes){const r=applyAutoClassification(s,s.dialogue||'',force);counts[r.type]=(counts[r.type]||0)+1}
+ p.classificationStats={...counts,updatedAt:Date.now()};save();render();toast('Classificação automática atualizada')
+}
 function applyTranscriptCues(cues,replace=false){
- const p=project();let count=0;
+ const p=project();let count=0;const counts={'Diálogo':0,'Narração':0,'Ambiente':0,'Sem fala':0,'A revisar':0};
  for(const s of p.scenes){
   const hits=cues.filter(c=>sceneCueOverlap(s,c)>0.05).sort((a,b)=>a.start-b.start);
-  if(!hits.length)continue;
-  const text=[...new Set(hits.map(c=>c.text))].join(' ').replace(/\s+/g,' ').trim();
-  if(!text)continue;
-  if(replace||!String(s.dialogue||'').trim()){s.dialogue=text;count++}
-  if(s.type==='A revisar'||s.type==='Ambiente/Narração')s.type='Diálogo';if(!s.speaker&&s.characters?.length===1)s.speaker=s.characters[0]
+  const text=hits.length?[...new Set(hits.map(c=>c.text))].join(' ').replace(/\s+/g,' ').trim():'';
+  s.transcriptSegments=hits.map(c=>({start:c.start,end:c.end,text:c.text}));
+  if(text&&(replace||!String(s.dialogue||'').trim())){s.dialogue=text;count++}
+  const effective=String(s.dialogue||text||'').trim();
+  const result=applyAutoClassification(s,effective,false);
+  counts[result.type]=(counts[result.type]||0)+1;
+  if(result.type==='Diálogo'&&!s.speaker&&s.characters?.length===1)s.speaker=s.characters[0]
  }
- p.transcriptSceneCount=count;p.transcriptAppliedAt=Date.now();save();render();toast(count+' cenas receberam fala')
+ p.transcriptSceneCount=count;p.transcriptAppliedAt=Date.now();p.classificationStats={...counts,updatedAt:Date.now()};save();render();toast(count+' cenas receberam fala e foram classificadas')
 }
 function importSubtitleFile(e){
  const file=e.target.files[0];if(!file)return;
@@ -447,8 +498,9 @@ function toggleStatus(id,key){const s=project().scenes.find(x=>x.id===id);if(!s)
 function sceneMatchesFilter(s){
  if(sceneFilter==='review')return s.type==='A revisar';
  if(sceneFilter==='dialogue')return s.type==='Diálogo';
- if(sceneFilter==='ambient')return s.type==='Ambiente/Narração';
- if(sceneFilter==='no-dialogue')return !String(s.dialogue||'').trim();
+ if(sceneFilter==='narration')return s.type==='Narração';
+ if(sceneFilter==='ambient')return s.type==='Ambiente';
+ if(sceneFilter==='no-dialogue')return s.type==='Sem fala'||!String(s.dialogue||'').trim();
  if(sceneFilter==='pending')return s.image!=='done'||s.animation!=='done'||!s.approved;
  return true
 }
@@ -466,7 +518,7 @@ function applyBulkEdit(){
  let changed=0;
  for(const s of project().scenes){
   if(!sceneSelection.has(s.id))continue;
-  if(type)s.type=type;
+  if(type){s.type=type;s.manualType=true;}
   if(location)s.location=location;
   if(characters)s.characters=characters.split(',').map(x=>x.trim()).filter(Boolean);
   if(speaker)s.speaker=speaker;
@@ -493,16 +545,16 @@ function propagateContinuityFromSelected(){
 }
 function scenesView(){
  const p=project(),selected=selectedSceneIndex!==null?p.scenes[selectedSceneIndex]:null,visible=p.scenes.filter(sceneMatchesFilter);
- return '<div class="grid"><section class="card span2"><div class="section-title"><div><p class="eyebrow">CENAS</p><h2>Decupagem</h2><p class="muted">'+visible.length+' de '+p.scenes.length+' cenas visíveis</p></div><button class="btn primary" onclick="addScene()">+ Nova cena</button></div><div class="scene-toolbar"><div class="filter-tabs">'+[['all','Todas'],['review','A revisar'],['dialogue','Diálogo'],['ambient','Ambiente'],['no-dialogue','Sem fala'],['pending','Pendentes']].map(([v,l])=>'<button class="btn '+(sceneFilter===v?'active-filter':'')+'" onclick="setSceneFilter(\''+v+'\')">'+l+'</button>').join('')+'</div><div class="actions"><button class="btn" onclick="selectAllVisible()">Selecionar visíveis</button><span id="bulkCounter" class="badge">'+sceneSelection.size+' selecionada(s)</span></div></div>'+
- (sceneSelection.size?'<div class="bulk-panel"><div class="bulk-grid"><label>Tipo<select id="bulkType"><option value="">Não alterar</option><option>A revisar</option><option>Diálogo</option><option>Ambiente/Narração</option></select></label><label>Cenário<input id="bulkLocation" placeholder="ex.: CAMP_OASIS_01"></label><label>Personagens<input id="bulkCharacters" placeholder="ABRAHAM_01, ISAAC_01"></label><label>Falante<input id="bulkSpeaker" placeholder="ex.: ABRAHAM_01"></label><label>Som ambiente<input id="bulkAmbience" placeholder="vento, passos, tecido..."></label></div><div class="actions"><button class="btn primary" onclick="applyBulkEdit()">Aplicar às selecionadas</button><button class="btn" onclick="clearBulkSelection()">Limpar seleção</button></div></div>':'')+
- '<div class="table scene-table">'+p.scenes.map((s,i)=>sceneMatchesFilter(s)?'<div class="scene-edit '+(selectedSceneIndex===i?'selected-scene':'')+'"><input class="scene-check" type="checkbox" '+(sceneSelection.has(s.id)?'checked':'')+' onchange="toggleSceneSelection(\''+s.id+'\',this.checked)"><div class="scene-thumb-wrap"><img class="scene-thumb" data-scene-thumb="'+s.id+'" alt="Miniatura '+s.id+'"></div><div><strong>'+s.id+'</strong><small>'+fmt(s.start)+' → '+fmt(s.end)+' • '+sceneDuration(s).toFixed(1)+' s</small></div><input value="'+esc(s.title)+'" onchange="editScene('+i+',\'title\',this.value)"><select onchange="editScene('+i+',\'type\',this.value)"><option '+(s.type==='A revisar'?'selected':'')+'>A revisar</option><option '+(s.type==='Diálogo'?'selected':'')+'>Diálogo</option><option '+(s.type==='Ambiente/Narração'?'selected':'')+'>Ambiente/Narração</option></select><input placeholder="Personagens: ID, ID" value="'+esc(s.characters.join(', '))+'" onchange="editScene('+i+',\'characters\',this.value)"><input placeholder="Cenário" value="'+esc(s.location)+'" onchange="editScene('+i+',\'location\',this.value)"><button class="btn" onclick="editTimes('+i+')">Tempo</button><button class="btn" onclick="selectSceneDetail('+i+')">Detalhes</button><button class="btn danger" onclick="removeScene('+i+')">×</button></div>':'').join('')+'</div></section>'+
+ return '<div class="grid"><section class="card span2"><div class="section-title"><div><p class="eyebrow">CENAS</p><h2>Decupagem</h2><p class="muted">'+visible.length+' de '+p.scenes.length+' cenas visíveis</p></div><button class="btn primary" onclick="addScene()">+ Nova cena</button></div><div class="scene-toolbar"><div class="filter-tabs">'+[['all','Todas'],['review','A revisar'],['dialogue','Diálogo'],['narration','Narração'],['ambient','Ambiente'],['no-dialogue','Sem fala'],['pending','Pendentes']].map(([v,l])=>'<button class="btn '+(sceneFilter===v?'active-filter':'')+'" onclick="setSceneFilter(\''+v+'\')">'+l+'</button>').join('')+'</div><div class="actions"><button class="btn" onclick="reclassifyExistingScenes(false)">Reclassificar automaticamente</button><button class="btn" onclick="selectAllVisible()">Selecionar visíveis</button><span id="bulkCounter" class="badge">'+sceneSelection.size+' selecionada(s)</span></div></div>'+
+ (sceneSelection.size?'<div class="bulk-panel"><div class="bulk-grid"><label>Tipo<select id="bulkType"><option value="">Não alterar</option><option>A revisar</option><option>Diálogo</option><option>Narração</option><option>Ambiente</option><option>Sem fala</option></select></label><label>Cenário<input id="bulkLocation" placeholder="ex.: CAMP_OASIS_01"></label><label>Personagens<input id="bulkCharacters" placeholder="ABRAHAM_01, ISAAC_01"></label><label>Falante<input id="bulkSpeaker" placeholder="ex.: ABRAHAM_01"></label><label>Som ambiente<input id="bulkAmbience" placeholder="vento, passos, tecido..."></label></div><div class="actions"><button class="btn primary" onclick="applyBulkEdit()">Aplicar às selecionadas</button><button class="btn" onclick="clearBulkSelection()">Limpar seleção</button></div></div>':'')+
+ '<div class="table scene-table">'+p.scenes.map((s,i)=>sceneMatchesFilter(s)?'<div class="scene-edit '+(selectedSceneIndex===i?'selected-scene':'')+'"><input class="scene-check" type="checkbox" '+(sceneSelection.has(s.id)?'checked':'')+' onchange="toggleSceneSelection(\''+s.id+'\',this.checked)"><div class="scene-thumb-wrap"><img class="scene-thumb" data-scene-thumb="'+s.id+'" alt="Miniatura '+s.id+'"></div><div><strong>'+s.id+'</strong><small>'+fmt(s.start)+' → '+fmt(s.end)+' • '+sceneDuration(s).toFixed(1)+' s'+(s.classificationConfidence?' • '+Math.round(s.classificationConfidence*100)+'%':'')+'</small></div><input value="'+esc(s.title)+'" onchange="editScene('+i+',\'title\',this.value)"><select onchange="editScene('+i+',\'type\',this.value)"><option '+(s.type==='A revisar'?'selected':'')+'>A revisar</option><option '+(s.type==='Diálogo'?'selected':'')+'>Diálogo</option><option '+(s.type==='Narração'?'selected':'')+'>Narração</option><option '+(s.type==='Ambiente'?'selected':'')+'>Ambiente</option><option '+(s.type==='Sem fala'?'selected':'')+'>Sem fala</option></select><input placeholder="Personagens: ID, ID" value="'+esc(s.characters.join(', '))+'" onchange="editScene('+i+',\'characters\',this.value)"><input placeholder="Cenário" value="'+esc(s.location)+'" onchange="editScene('+i+',\'location\',this.value)"><button class="btn" onclick="editTimes('+i+')">Tempo</button><button class="btn" onclick="selectSceneDetail('+i+')">Detalhes</button><button class="btn danger" onclick="removeScene('+i+')">×</button></div>':'').join('')+'</div></section>'+
  (selected?'<section class="card span2 scene-detail"><div class="section-title"><div><p class="eyebrow">DIREÇÃO DA CENA</p><h2>'+selected.id+' — '+esc(selected.title)+'</h2><p class="muted">'+(selected.sourceGroup?'Grupo '+esc(selected.sourceGroup)+' • ':'')+(selected.speaker?'Falante: '+esc(selected.speaker):'Falante não definido')+'</p></div><div class="actions">'+(sourceGroupScenes(selected,p).length>1?'<button class="btn" onclick="propagateContinuityFromSelected()">Propagar continuidade</button>':'')+'<button class="btn" onclick="closeSceneDetail()">Fechar</button></div></div><div class="scene-detail-thumb"><img class="scene-thumb-large" data-scene-thumb="'+selected.id+'" alt="Miniatura '+selected.id+'"></div><div class="detail-grid"><label>Personagem falante<input value="'+esc(selected.speaker||'')+'" onchange="editSceneDetail(\'speaker\',this.value)" placeholder="ex.: ABRAHAM_01"></label><label>Fala / diálogo<textarea rows="4" onchange="editSceneDetail(\'dialogue\',this.value)" placeholder="Texto falado na cena">'+esc(selected.dialogue||'')+'</textarea></label><label>Ação<textarea rows="4" onchange="editSceneDetail(\'action\',this.value)" placeholder="Movimentos e atuação dos personagens">'+esc(selected.action||'')+'</textarea></label><label>Câmera<textarea rows="4" onchange="editSceneDetail(\'camera\',this.value)" placeholder="Plano, movimento e enquadramento">'+esc(selected.camera||'')+'</textarea></label><label>Som ambiente<textarea rows="4" onchange="editSceneDetail(\'ambience\',this.value)" placeholder="Passos, vento, tecido, animais, ambiente">'+esc(selected.ambience||'')+'</textarea></label></div><div class="two"><div class="panel"><span class="label">Prompt de imagem</span><p class="prompt">'+esc(imagePrompt(selected))+'</p><button class="btn" onclick="copy('+JSON.stringify(imagePrompt(selected))+')">Copiar</button></div><div class="panel"><span class="label">Prompt de animação</span><p class="prompt">'+esc(animationPrompt(selected))+'</p><button class="btn" onclick="copy('+JSON.stringify(animationPrompt(selected))+')">Copiar</button></div></div></section>':'')+'</div>'
 }
 function selectSceneDetail(i){selectedSceneIndex=i;render()}
 function closeSceneDetail(){selectedSceneIndex=null;render()}
 function editSceneDetail(key,val){if(selectedSceneIndex===null)return;project().scenes[selectedSceneIndex][key]=val;save()}
 function addScene(){const p=project(),last=p.scenes[p.scenes.length-1],n=p.scenes.length+1,start=last?Number(last.end):0;p.scenes.push({id:'C'+String(n).padStart(3,'0'),start,end:start+8,title:'Nova cena',type:'Ambiente/Narração',characters:[],location:'',dialogue:'',image:'pending',animation:'pending',approved:false});save();render()}
-function editScene(i,key,val){const s=project().scenes[i];if(key==='characters')s.characters=val.split(',').map(x=>x.trim()).filter(Boolean);else s[key]=val;save()}
+function editScene(i,key,val){const s=project().scenes[i];if(key==='characters')s.characters=val.split(',').map(x=>x.trim()).filter(Boolean);else s[key]=val;if(key==='type')s.manualType=true;save()}
 function editTimes(i){const s=project().scenes[i],a=prompt('Início em segundos',s.start),b=prompt('Fim em segundos',s.end);if(a!==null&&b!==null){s.start=Number(a);s.end=Number(b);save();render()}}
 function removeScene(i){project().scenes.splice(i,1);if(selectedSceneIndex===i)selectedSceneIndex=null;else if(selectedSceneIndex!==null&&selectedSceneIndex>i)selectedSceneIndex--;save();render()}
 function assetsView(kind){
