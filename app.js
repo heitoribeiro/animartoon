@@ -129,7 +129,7 @@ function analyzeDriveFile(fileId){
  }).catch(e=>{if(txt)txt.textContent='Falha no Drive/FFmpeg: '+(e?.message||'erro');toast('Falha ao analisar arquivo do Google Drive')})
 }
 
-async function processDriveMedia(fileId){
+async function processDriveMedia(fileId,fromEasy=false){
  if(!driveToken)return toast('Conecte novamente ao Google Drive');
  const p=project(),file=(p.fileIndex||[]).find(f=>f.driveId===fileId);
  if(!file)return toast('Arquivo do Drive não encontrado');
@@ -139,17 +139,18 @@ async function processDriveMedia(fileId){
  form.append('file_id',fileId);
  form.append('access_token',driveToken);
  form.append('scenes_json',JSON.stringify(p.scenes.map(s=>({id:s.id,start:s.start,end:s.end}))));
- p.mediaJob={status:'starting',progress:1,message:'Enviando tarefa ao analisador',fileId,startedAt:Date.now()};
+ p.mediaJob={status:'starting',progress:1,message:'Enviando tarefa ao analisador',fileId,startedAt:Date.now(),fromEasy};
+ if(fromEasy)p.easyPrep={...(p.easyPrep||{}),status:'running',progress:40,message:'Enviando vídeo para gerar miniaturas e transcrição'};
  save();render();
  try{
   const r=await fetch(analyzerUrl()+'/process-drive-media',{method:'POST',body:form});
   const data=await r.json().catch(()=>({}));
   if(!r.ok||!data.ok)throw new Error(data.detail||('HTTP '+r.status));
-  p.mediaJob={status:'queued',progress:2,message:'Processamento iniciado',fileId,jobId:data.jobId,startedAt:Date.now()};
+  p.mediaJob={status:'queued',progress:2,message:'Processamento iniciado',fileId,jobId:data.jobId,startedAt:Date.now(),fromEasy};
   save();render();
   pollMediaJob(data.jobId);
  }catch(e){
-  p.mediaJob={status:'error',progress:100,message:e?.message||'Falha ao iniciar processamento',fileId,failedAt:Date.now()};
+  p.mediaJob={status:'error',progress:100,message:e?.message||'Falha ao iniciar processamento',fileId,failedAt:Date.now(),fromEasy};if(fromEasy)p.easyPrep={...(p.easyPrep||{}),status:'error',progress:100,message:e?.message||'Falha ao iniciar processamento'};
   save();render();toast('Falha ao iniciar miniaturas/transcrição');
  }
 }
@@ -161,24 +162,27 @@ async function pollMediaJob(jobId){
   const data=await r.json().catch(()=>({}));
   if(!r.ok)throw new Error(data.detail||('HTTP '+r.status));
   p.mediaJob={...(p.mediaJob||{}),jobId,status:data.status||'running',progress:Number(data.progress||0),message:data.message||'Processando'};
+  if(p.mediaJob.fromEasy)p.easyPrep={...(p.easyPrep||{}),status:'running',progress:40+Math.round(Number(data.progress||0)*0.55),message:data.message||'Processando vídeo'};
   save();
   const textEl=document.getElementById('driveMediaJobText'),bar=document.getElementById('driveMediaJobBar');
   if(textEl)textEl.textContent=p.mediaJob.message+' • '+p.mediaJob.progress+'%';
   if(bar)bar.style.width=p.mediaJob.progress+'%';
   if(data.status==='done'&&data.result){
    const result=data.result,thumbs=result.thumbnails||[];
-   for(const item of thumbs){if(item.image)await saveSceneThumbnail(p.id,item.sceneId,item.image)}
+   for(const item of thumbs){if(item.image)await saveSceneThumbnail(p.id,item.sceneId,item.image);const scene=p.scenes.find(s=>s.id===item.sceneId);if(scene){scene.thumbnailStatus=item.status||'ok';scene.thumbnailAt=item.at;scene.thumbnailBrightness=item.brightness;scene.thumbnailVariance=item.variance}}
    const cues=(result.cues||[]).map(c=>({start:Number(c.start),end:Number(c.end),text:String(c.text||'')}));
    p.transcriptFileName='Transcrição automática • '+(result.filename||'Google Drive');
    p.transcriptCueCount=cues.length;
    p.mediaEnrichment={thumbnailCount:result.thumbnailCount||0,cueCount:result.cueCount||cues.length,elapsedSeconds:result.elapsedSeconds||0,finishedAt:Date.now()};
    p.mediaJob={...(p.mediaJob||{}),status:'done',progress:100,message:'Miniaturas e transcrição concluídas',finishedAt:Date.now()};
+   if(p.mediaJob.fromEasy)p.easyPrep={...(p.easyPrep||{}),status:'done',progress:100,message:'Vídeo preparado automaticamente',finishedAt:Date.now()};
+   p.preparedDriveFileId=p.mediaJob.fileId||p.easySourceFileId;
    save();
-   if(cues.length)applyTranscriptCues(cues,false);else{render();toast('Miniaturas geradas; nenhuma fala detectada')}
+   if(cues.length)applyTranscriptCues(cues,false);else{reclassifyExistingScenes(false);render();toast('Miniaturas geradas; nenhuma fala detectada')}
    return;
   }
   if(data.status==='error'){
-   p.mediaJob={...(p.mediaJob||{}),status:'error',progress:100,message:data.message||'Falha no processamento',failedAt:Date.now()};
+   p.mediaJob={...(p.mediaJob||{}),status:'error',progress:100,message:data.message||'Falha no processamento',failedAt:Date.now()};if(p.mediaJob.fromEasy)p.easyPrep={...(p.easyPrep||{}),status:'error',progress:100,message:data.message||'Falha no processamento'};
    save();render();toast('Falha no processamento de mídia');return;
   }
   setTimeout(()=>pollMediaJob(jobId),3000);
@@ -231,12 +235,70 @@ function youtubeTestPanel(p){
  return '<section class="card span2"><div class="section-title"><div><p class="eyebrow">TESTE DO YOUTUBE</p><h2>'+(valid?'Link reconhecido':'Link inválido')+'</h2></div><span class="badge '+(valid?'ok':'warn')+'">'+(valid?'válido':'erro')+'</span></div>'+
  (valid?'<div class="youtube-test-grid"><div class="youtube-preview"><iframe src="https://www.youtube.com/embed/'+id+'" title="Prévia do YouTube" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe></div><div class="panel"><span class="label">Vídeo</span><strong>'+esc(p.youtubeTitle||p.sourceName||id)+'</strong>'+(p.youtubeAuthor?'<p class="muted">'+esc(p.youtubeAuthor)+'</p>':'')+'<p class="muted">O link foi validado e pode ser usado como referência do projeto.</p><div class="warning">A análise automática de pixels não pode ser feita diretamente dentro do player do YouTube em uma página estática por restrições de origem do navegador. Para detectar cortes a partir do link, a Animartoon precisará de um serviço de análise separado.</div></div></div>':'<div class="warning">Revise a URL informada.</div>')+'</section>'
 }
+
+function setSimpleMode(v){project().simpleMode=!!v;save();render()}
+function easyPrepSummary(p){
+ const stats=p.classificationStats||{},enriched=p.mediaEnrichment||{},job=p.mediaJob||{},prep=p.easyPrep||{};
+ return '<div class="easy-status-grid">'+
+  '<div class="panel"><span class="muted">Decupagem</span><strong>'+(p.scenes?.length||0)+' cenas</strong></div>'+
+  '<div class="panel"><span class="muted">Miniaturas</span><strong>'+(enriched.thumbnailCount||0)+'</strong></div>'+
+  '<div class="panel"><span class="muted">Falas</span><strong>'+(enriched.cueCount||p.transcriptCueCount||0)+'</strong></div>'+
+  '<div class="panel"><span class="muted">A revisar</span><strong>'+(stats['A revisar']||0)+'</strong></div>'+
+ '</div>'+
+ ((prep.status==='running'||job.status==='running'||job.status==='queued'||job.status==='starting')?'<div class="easy-progress"><div class="mini"><div style="width:'+Number(prep.progress||job.progress||0)+'%"></div></div><p class="muted">'+esc(prep.message||job.message||'Processando...')+'</p></div>':'')+
+ (prep.status==='done'?'<div class="easy-done">✓ Preparação automática concluída. Revise apenas as cenas marcadas como A revisar.</div>':'')
+}
+function easyModePanel(p){
+ const videos=driveVideoFiles(),connected=!!driveToken;
+ const sourceName=p.youtubeTitle||p.sourceName||'Vídeo de referência';
+ return '<section class="card span2 easy-card"><div class="section-title"><div><p class="eyebrow">MODO FÁCIL</p><h2>Prepare o vídeo quase automaticamente</h2><p class="muted">Escolha o vídeo do Google Drive e a Animartoon cuida dos cortes, miniaturas, transcrição e classificação inicial das cenas.</p></div><span class="badge '+(connected?'ok':'warn')+'">'+(connected?'Drive conectado':'Drive desconectado')+'</span></div>'+
+ '<div class="easy-steps"><div><strong>1</strong><span>Vídeo</span></div><div><strong>2</strong><span>Cortes</span></div><div><strong>3</strong><span>Miniaturas</span></div><div><strong>4</strong><span>Transcrição</span></div><div><strong>5</strong><span>Classificação</span></div></div>'+
+ '<div class="panel easy-source"><span class="muted">Referência</span><strong>'+esc(sourceName)+'</strong>'+(p.sourceUrl?'<a class="btn" href="'+esc(p.sourceUrl)+'" target="_blank">Abrir referência ↗</a>':'')+'</div>'+
+ easyPrepSummary(p)+
+ (!connected?'<div class="warning">Conecte o Google Drive em Configurações para usar o modo automático.</div><button class="btn primary" onclick="setPage(\'Configurações\')">Ir para Configurações</button>':
+ videos.length?videos.map(v=>'<div class="panel easy-video"><div><strong>'+esc(v.name)+'</strong><small class="muted">'+(v.size?(v.size/1024/1024).toFixed(1)+' MB':'Google Drive')+'</small></div><button class="btn primary big-action" onclick="startEasyPrepare(\''+v.driveId+'\')">Preparar automaticamente</button></div>').join(''):
+ '<div class="actions"><button class="btn primary" onclick="refreshDriveForAnalysis()">Localizar vídeo no Drive</button></div>')+
+ '<div class="easy-footer"><button class="btn" onclick="setSimpleMode(false)">Mostrar ferramentas avançadas</button>'+(p.scenes?.length?'<button class="btn" onclick="setPage(\'Cenas\')">Ver cenas</button>':'')+'</div></section>'
+}
+async function startEasyPrepare(fileId){
+ if(!driveToken)return toast('Conecte o Google Drive primeiro');
+ const p=project(),file=(p.fileIndex||[]).find(f=>f.driveId===fileId);
+ if(!file)return toast('Vídeo não encontrado');
+ if(p.easyPrep?.status==='running')return toast('A preparação já está em andamento');
+ p.simpleMode=true;
+ p.easyPrep={status:'running',progress:5,message:'Preparando o vídeo...',fileId,startedAt:Date.now()};
+ save();render();
+ try{
+  if(!p.scenes?.length){
+   p.easyPrep={...p.easyPrep,progress:10,message:'Detectando cortes e dividindo as cenas'};
+   save();render();
+   const form=new FormData();
+   form.append('file_id',fileId);form.append('access_token',driveToken);form.append('threshold','0.35');form.append('max_duration',String(generatorLimit()));form.append('split_long','true');
+   const r=await fetch(analyzerUrl()+'/analyze-drive',{method:'POST',body:form});
+   const data=await r.json().catch(()=>({}));
+   if(!r.ok||!data.ok)throw new Error(data.detail||('HTTP '+r.status));
+   p.scenes=(data.scenes||[]).map(s=>({...s}));
+   p.analysisStats={step:'FFmpeg',threshold:data.threshold,thresholdLabel:'Média • FFmpeg',visualCuts:data.visualCuts||0,technicalSplits:data.technicalSplits||0,server:true,source:'Google Drive',analyzedAt:Date.now()};
+   p.easyPrep={...p.easyPrep,progress:35,message:(data.sceneCount||p.scenes.length)+' segmentos preparados. Gerando miniaturas e transcrição'};
+   save();render();
+  }else{
+   p.easyPrep={...p.easyPrep,progress:35,message:'Decupagem existente mantida. Gerando miniaturas e transcrição'};
+   save();render();
+  }
+  p.easySourceFileId=fileId;
+  await processDriveMedia(fileId,true);
+ }catch(e){
+  p.easyPrep={...p.easyPrep,status:'error',progress:100,message:e?.message||'Falha na preparação automática',failedAt:Date.now()};
+  save();render();toast('Falha na preparação automática');
+ }
+}
 function importView(){
  const p=project(),candidate=p.analysisCandidateScenes||[],stats=p.analysisStats||null;
+ if(p.simpleMode!==false)return '<div class="grid">'+easyModePanel(p)+'</div>';
  const sourceBlock=p.sourceType==='youtube'
  ? '<label class="field">URL<input id="sourceUrl" value="'+esc(p.sourceUrl||'')+'" placeholder="https://youtu.be/..."></label><div class="actions"><button class="btn primary" onclick="saveSourceUrl()">Salvar URL</button><button class="btn" onclick="testYouTubeLink()">Testar link do YouTube</button><a class="btn linkbtn" href="'+esc(p.sourceUrl||'#')+'" target="_blank">Abrir vídeo ↗</a></div><p class="muted note">O YouTube continua como referência do projeto. Para decupagem automática, selecione abaixo uma cópia local do vídeo; ela é analisada somente no navegador.</p>'
  : '<div class="drop"><input id="videoFile" type="file" accept="video/*" onchange="readLocalVideo(event)"><strong>Selecionar vídeo local como fonte</strong><small>A duração é lida no navegador. O arquivo não é enviado.</small></div>';
- return '<div class="grid"><section class="card span2"><p class="eyebrow">FONTE</p><h2>Importação do projeto</h2><div class="sourcebox"><div><span class="label">Tipo</span><strong>'+(p.sourceType==='youtube'?'YouTube':'Arquivo local')+'</strong></div><div><span class="label">Duração</span><strong>'+(p.duration?fmt(p.duration):'Ainda não informada')+'</strong></div></div>'+sourceBlock+'</section>'+youtubeTestPanel(p)+analyzerPanel(p)+driveAnalysisPanel(p)+
+ return '<div class="grid"><section class="card span2"><div class="section-title"><div><p class="eyebrow">FONTE</p><h2>Importação do projeto</h2></div><button class="btn" onclick="setSimpleMode(true)">Voltar ao modo fácil</button></div><div class="sourcebox"><div><span class="label">Tipo</span><strong>'+(p.sourceType==='youtube'?'YouTube':'Arquivo local')+'</strong></div><div><span class="label">Duração</span><strong>'+(p.duration?fmt(p.duration):'Ainda não informada')+'</strong></div></div>'+sourceBlock+'</section>'+youtubeTestPanel(p)+analyzerPanel(p)+driveAnalysisPanel(p)+
  '<section class="card span2"><div class="section-title"><div><p class="eyebrow">DECUPAGEM LOCAL — ALTERNATIVA</p><h2>Analisar cortes visuais no navegador</h2></div><span class="badge">'+(p.analysisFileName?esc(p.analysisFileName):'sem arquivo')+'</span></div><p class="muted">A análise compara quadros reduzidos para localizar mudanças visuais. O vídeo permanece no seu computador. O resultado é preliminar e deve ser revisado antes da produção.</p><div class="drop"><input id="analysisFile" type="file" accept="video/*" onchange="attachAnalysisVideo(event)"><strong>Selecionar arquivo para análise</strong><small>'+(analysisVideoFile?esc(analysisVideoFile.name):'Selecione a cópia local do vídeo de referência')+'</small></div><div class="analysis-controls"><label>Precisão<select id="analysisStep"><option value="2">Rápida — 2 s</option><option value="1" selected>Equilibrada — 1 s</option><option value="0.5">Precisa — 0,5 s</option></select></label><label>Sensibilidade<select id="analysisThreshold"><option value="0.03">Baixa</option><option value="0.05" selected>Média</option><option value="0.08">Alta</option></select></label><label class="checkline"><input id="splitLongScenes" type="checkbox" checked> Dividir cenas acima do limite do gerador</label></div><div class="analysis-progress"><div class="mini"><div id="analysisProgressBar" style="width:0%"></div></div><span id="analysisProgressText" class="muted">Pronto para analisar</span></div><div class="actions"><button class="btn primary" onclick="analyzeSelectedVideo()">Detectar cenas</button><button class="btn" onclick="cancelVideoAnalysis()">Cancelar</button></div></section>'+
  (stats&&stats.failed?'<section class="card span2"><p class="eyebrow">DIAGNÓSTICO</p><h2>Não foi possível extrair quadros diferentes</h2><div class="warning">O navegador percorreu o vídeo, mas os quadros capturados ficaram idênticos. A Animartoon não criou cortes artificiais desta vez. Tente o mesmo arquivo em MP4/H.264 ou outro navegador Chromium.</div><div class="audit"><div class="panel"><span class="muted">Maior diferença</span><strong>'+Number(stats.maxDiff||0).toFixed(4)+'</strong></div><div class="panel"><span class="muted">Quadros válidos</span><strong>'+Number(stats.diagnosticFrames||0)+'</strong></div><div class="panel"><span class="muted">Variância máxima</span><strong>'+Number(stats.diagnosticVariance||0).toFixed(1)+'</strong></div></div></section>':'')+(candidate.length?'<section class="card span2"><div class="section-title"><div><p class="eyebrow">RESULTADO PRELIMINAR</p><h2>'+candidate.length+' segmentos detectados</h2></div><div class="actions"><button class="btn" onclick="generateAnalysisThumbs()">Gerar miniaturas</button><button class="btn primary" onclick="applyDetectedScenes()">Aplicar à decupagem</button></div></div>'+(stats?(stats.server?'<div class="audit compact-audit"><div class="panel"><span class="muted">Método</span><strong>FFmpeg</strong></div><div class="panel"><span class="muted">Sensibilidade</span><strong>'+stats.thresholdLabel+'</strong></div><div class="panel"><span class="muted">Cortes visuais</span><strong>'+stats.visualCuts+'</strong></div><div class="panel"><span class="muted">Cenas visuais</span><strong>'+((stats.visualCuts||0)+1)+'</strong></div><div class="panel"><span class="muted">Divisões adicionais</span><strong>'+Math.max(0,candidate.length-((stats.visualCuts||0)+1))+'</strong></div><div class="panel"><span class="muted">Segmentos de produção</span><strong>'+candidate.length+'</strong></div></div>':'<div class="audit compact-audit"><div class="panel"><span class="muted">Amostragem</span><strong>'+stats.step+' s</strong></div><div class="panel"><span class="muted">Sensibilidade</span><strong>'+stats.thresholdLabel+'</strong></div><div class="panel"><span class="muted">Cortes visuais</span><strong>'+stats.visualCuts+'</strong></div><div class="panel"><span class="muted">Subcenas técnicas</span><strong>'+stats.technicalSplits+'</strong></div><div class="panel"><span class="muted">Limiar calculado</span><strong>'+Number(stats.cutoff||0).toFixed(3)+'</strong></div><div class="panel"><span class="muted">Maior diferença</span><strong>'+Number(stats.maxDiff||0).toFixed(3)+'</strong></div></div>'):'')+'<div class="detected-grid">'+candidate.slice(0,20).map(s=>'<div class="detected-card">'+((s.thumbStart||s.thumbEnd)?'<div class="thumb-pair">'+(s.thumbStart?'<img src="'+s.thumbStart+'" alt="Início '+s.id+'">':'')+(s.thumbEnd?'<img src="'+s.thumbEnd+'" alt="Fim '+s.id+'">':'')+'</div>':'')+'<div class="detected-meta"><strong>'+s.id+'</strong><span>'+fmt(s.start)+' → '+fmt(s.end)+'</span><span>'+sceneDuration(s).toFixed(1)+' s</span></div></div>').join('')+(candidate.length>20?'<p class="muted note">Mostrando as 20 primeiras. A lista completa será aplicada em Cenas.</p>':'')+'</div></section>':'')+
  '<section class="card"><p class="eyebrow">DECUPAGEM</p><h2>Cenas</h2><strong class="big">'+p.scenes.length+'</strong><p class="muted">cenas cadastradas</p><button class="btn" onclick="setPage(\'Cenas\')">Revisar cenas</button></section><section class="card"><p class="eyebrow">FALAS / TRANSCRIÇÃO</p><h2>Importar SRT ou VTT</h2><p class="muted">A Animartoon associa as legendas às cenas pelo intervalo de tempo e preenche o campo de fala.</p><div class="drop compact-drop"><input id="subtitleFile" type="file" accept=".srt,.vtt,text/plain" onchange="importSubtitleFile(event)"><strong>Selecionar legenda</strong><small>'+(p.transcriptFileName?esc(p.transcriptFileName)+' • '+(p.transcriptCueCount||0)+' trechos':'SRT ou WebVTT')+'</small></div><label class="checkline transcript-option"><input id="replaceDialogue" type="checkbox"> Substituir falas já preenchidas</label>'+(p.transcriptAppliedAt?'<p class="muted note">'+(p.transcriptSceneCount||0)+' cenas receberam fala na última importação.</p>':'')+'</section><section class="card span2"><p class="eyebrow">IMPORTAR DADOS</p><h2>JSON de cenas</h2><textarea id="jsonScenes" rows="7" placeholder=\'[{"start":0,"end":8.2,"title":"Cena inicial","type":"Diálogo"}]\'></textarea><button class="btn" onclick="importScenesJson()">Importar cenas</button></section></div>'
@@ -739,5 +801,5 @@ function filemap(){
 function audit(){const p=project(),summary=fileSummary(p),mi=p.scenes.filter(s=>s.image!=='done').length,ma=p.scenes.filter(s=>s.animation!=='done').length,long=p.scenes.filter(s=>sceneDuration(s)>10),pending=p.scenes.filter(s=>s.image!=='done'||s.animation!=='done'||!s.approved),missingChars=p.characters.filter(id=>!summary.characters[id]),missingScenarios=p.locations.filter(id=>!summary.scenarios[id]),missingSpeakers=p.scenes.filter(s=>s.type==='Diálogo'&&String(s.dialogue||'').trim()&&!String(s.speaker||'').trim());return '<div class="grid"><section class="card span2"><p class="eyebrow">AUDITORIA</p><h2>Verificação do projeto</h2><div class="audit"><div class="panel"><span class="muted">Cenas</span><strong>'+p.scenes.length+'</strong></div><div class="panel"><span class="muted">Imagens faltando</span><strong>'+mi+'</strong></div><div class="panel"><span class="muted">Animações faltando</span><strong>'+ma+'</strong></div><div class="panel"><span class="muted">Fora do padrão</span><strong>'+summary.unrecognized.length+'</strong></div></div></section>'+(pending.length?'<section class="card span2"><p class="eyebrow">PENDÊNCIAS</p><h2>Próximas lacunas</h2><div class="pending">'+pending.slice(0,20).map(s=>'<div><strong>'+s.id+'</strong><span>'+esc(s.title)+'</span><span class="warn">'+(s.image!=='done'?'imagem':s.animation!=='done'?'animação':'aprovação')+'</span></div>').join('')+'</div></section>':'')+(missingSpeakers.length?'<section class="card span2"><p class="eyebrow">FALANTES</p><h2>Diálogos sem personagem falante</h2><div class="pending">'+missingSpeakers.slice(0,20).map(s=>'<div><strong>'+s.id+'</strong><span>'+esc(s.dialogue||s.title)+'</span><span class="warn">definir falante</span></div>').join('')+'</div></section>':'')+(long.length?'<section class="card"><p class="eyebrow">DURAÇÃO</p><h2>Cenas acima de 10 s</h2><div class="pending">'+long.map(s=>'<div><strong>'+s.id+'</strong><span>'+esc(s.title)+'</span><span class="warn">'+sceneDuration(s).toFixed(1)+' s</span></div>').join('')+'</div></section>':'')+(summary.duplicates.length?'<section class="card"><p class="eyebrow">VERSÕES</p><h2>Múltiplas versões</h2><div class="pending">'+summary.duplicates.slice(0,20).map(x=>'<div><strong>'+x.key+'</strong><span>'+x.count+' arquivos</span><span class="ok">v'+String(x.latest.version).padStart(2,'0')+'</span></div>').join('')+'</div></section>':'')+'</div>'}
 function settings(){const p=project(),modes=['Google Drive Online','Google Drive no computador','Controle manual'],ts=state.tools||defaultTools;return '<div class="grid"><section class="card span2"><p class="eyebrow">ARMAZENAMENTO</p><h2>Modo do projeto</h2><div class="modes">'+modes.map(m=>'<button class="mode '+(p.storage===m?'selected':'')+'" onclick="setStorage(\''+m+'\')"><strong>'+m+'</strong></button>').join('')+'</div></section>'+(p.storage==='Google Drive no computador'?localFolderControls(p):p.storage==='Google Drive Online'?onlineDriveControls(p):'')+((p.storage==='Google Drive no computador'||p.storage==='Google Drive Online')?autoSyncControls(p):'')+'<section class="card span2"><p class="eyebrow">FERRAMENTAS</p><h2>Geradores cadastrados</h2><div class="settings-list">'+ts.map((t,i)=>'<div><div class="meta"><strong>'+t.name+'</strong><small class="muted">'+(t.category==='image'?'Imagem':'Animação')+(t.preferred?' • preferida':'')+'</small></div><div class="chips">'+(t.max?'<span class="chip">'+t.max+'s</span>':'')+(t.dialogue?'<span class="chip">fala</span>':'')+(t.ambience?'<span class="chip">ambiente</span>':'')+'</div><button class="btn" onclick="setPreferred('+i+')">'+(t.preferred?'★':'☆')+'</button><a href="'+t.url+'" target="_blank">Abrir ↗</a></div>').join('')+'</div></section></div>'}
 function setPreferred(i){const ts=state.tools||defaultTools,cat=ts[i].category;ts.forEach((t,j)=>{if(t.category===cat)t.preferred=j===i});state.tools=ts;save();render()}
-function render(){const p=project();nav();document.getElementById('pageTitle').textContent=state.page;document.getElementById('storagePill').textContent=p?.storage||'—';const mini=document.querySelector('.project-mini');if(mini)mini.innerHTML='<span>Projeto ativo</span><strong>'+esc(p?.name||'Nenhum')+'</strong><small>Sprint 2.1 • MVP 1.2</small>';const views={'Próxima ação':nextView,'Projetos':projectsView,'Importação':importView,'Produção':production,'Personagens':()=>assetsView('Personagens'),'Cenários':()=>assetsView('Cenários'),'Cenas':scenesView,'Mapa de arquivos':filemap,'Auditoria':audit,'Configurações':settings};document.getElementById('content').innerHTML=views[state.page]();configureAutoSync();if(state.page==='Cenas')hydrateSceneThumbs()}
+function render(){const p=project();nav();document.getElementById('pageTitle').textContent=state.page;document.getElementById('storagePill').textContent=p?.storage||'—';const mini=document.querySelector('.project-mini');if(mini)mini.innerHTML='<span>Projeto ativo</span><strong>'+esc(p?.name||'Nenhum')+'</strong><small>Sprint 2.2 • MVP 1.3</small>';const views={'Próxima ação':nextView,'Projetos':projectsView,'Importação':importView,'Produção':production,'Personagens':()=>assetsView('Personagens'),'Cenários':()=>assetsView('Cenários'),'Cenas':scenesView,'Mapa de arquivos':filemap,'Auditoria':audit,'Configurações':settings};document.getElementById('content').innerHTML=views[state.page]();configureAutoSync();if(state.page==='Cenas')hydrateSceneThumbs()}
 render();
